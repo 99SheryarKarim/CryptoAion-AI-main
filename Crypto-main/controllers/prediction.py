@@ -21,14 +21,14 @@ RETRY_DELAY = 2  # seconds
 
 # Timeframe mapping for yfinance
 TIMEFRAME_MAP = {
-    "30m": {"period": "60d", "interval": "30m"},  # Increased from 7d to 60d for more data points
+    "30m": {"period": "7d", "interval": "30m"},
     "1h": {"period": "60d", "interval": "1h"},
     "4h": {"period": "60d", "interval": "1h"},  # We'll resample this
     "24h": {"period": "730d", "interval": "1d"}
 }
 
 def get_latest_data(symbol, timeframe="1h"):
-    """Get latest data with proper timeframe handling and retries"""
+    """Get latest data with proper timeframe handling"""
     if timeframe not in TIMEFRAME_MAP:
         raise ValueError(f"Invalid timeframe. Must be one of {list(TIMEFRAME_MAP.keys())}")
     
@@ -38,92 +38,70 @@ def get_latest_data(symbol, timeframe="1h"):
     
     tf_config = TIMEFRAME_MAP[timeframe]
     
-    # Implement retries with exponential backoff
-    max_retries = 3
-    retry_delay = 2  # Initial delay in seconds
-    
-    for attempt in range(max_retries):
+    # Implement retry logic
+    for attempt in range(MAX_RETRIES):
         try:
-            # Try yfinance first with increased timeout for 30m timeframe
+            # Set a longer timeout for the download
             data = yf.download(
                 tickers=symbol,
                 period=tf_config["period"],
                 interval=tf_config["interval"],
-                progress=False,
-                timeout=20 if timeframe == "30m" else 10  # Increased timeout for 30m
+                timeout=30  # Increase timeout to 30 seconds
             )
             
             if not data.empty:
-                # For 30m timeframe, ensure we have enough data points
-                if timeframe == "30m":
-                    # Ensure we have at least 48 data points (24 hours worth)
-                    if len(data) < 48:
-                        # If not enough data, try to get more
-                        data = yf.download(
-                            tickers=symbol,
-                            period="7d",  # Try last 7 days
-                            interval="30m",
-                            progress=False,
-                            timeout=20
-                        )
+                break
                 
-                # For 4h timeframe, resample 1h data
-                if timeframe == "4h":
-                    data = data.resample('4H').agg({
-                        'Open': 'first',
-                        'High': 'max',
-                        'Low': 'min',
-                        'Close': 'last',
-                        'Volume': 'sum'
-                    })
-                
-                # Add technical indicators with proper window sizes for 30m
-                if timeframe == "30m":
-                    # Use smaller windows for 30m timeframe
-                    data['SMA_10'] = data['Close'].rolling(window=20).mean()
-                    data['RSI'] = 100 - (100 / (1 + (data['Close'].diff().rolling(28).mean() / data['Close'].diff().rolling(28).std())))
-                    data['MACD'] = data['Close'].ewm(span=24, adjust=False).mean() - data['Close'].ewm(span=52, adjust=False).mean()
-                    data['Bollinger_Upper'] = data['Close'].rolling(window=40).mean() + 2 * data['Close'].rolling(window=40).std()
-                    data['Bollinger_Lower'] = data['Close'].rolling(window=40).mean() - 2 * data['Close'].rolling(window=40).std()
-                else:
-                    # Original window sizes for other timeframes
-                    data['SMA_10'] = data['Close'].rolling(window=10).mean()
-                    data['RSI'] = 100 - (100 / (1 + (data['Close'].diff().rolling(14).mean() / data['Close'].diff().rolling(14).std())))
-                    data['MACD'] = data['Close'].ewm(span=12, adjust=False).mean() - data['Close'].ewm(span=26, adjust=False).mean()
-                    data['Bollinger_Upper'] = data['Close'].rolling(window=20).mean() + 2 * data['Close'].rolling(window=20).std()
-                    data['Bollinger_Lower'] = data['Close'].rolling(window=20).mean() - 2 * data['Close'].rolling(window=20).std()
-                
-                # Drop any rows with NaN values
-                data.dropna(inplace=True)
-                
-                # Verify required columns exist
-                required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-                missing_columns = [col for col in required_columns if col not in data.columns]
-                if missing_columns:
-                    raise ValueError(f"Missing required columns: {missing_columns}")
-                
-                # For 30m timeframe, ensure we have enough data points after processing
-                if timeframe == "30m" and len(data) < 48:
-                    raise ValueError(f"Insufficient data points for 30m timeframe. Got {len(data)}, need at least 48.")
-                
-                return data
+            if attempt < MAX_RETRIES - 1:
+                print(f"Attempt {attempt + 1} failed, retrying in {RETRY_DELAY} seconds...")
+                time.sleep(RETRY_DELAY)
                 
         except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"Attempt {attempt + 1} failed for {symbol}: {str(e)}")
-                time.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-                continue
+            if attempt < MAX_RETRIES - 1:
+                print(f"Error on attempt {attempt + 1}: {str(e)}")
+                print(f"Retrying in {RETRY_DELAY} seconds...")
+                time.sleep(RETRY_DELAY)
             else:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to fetch data for {symbol} after {max_retries} attempts: {str(e)}"
-                )
+                raise ValueError(f"Failed to fetch data after {MAX_RETRIES} attempts: {str(e)}")
     
-    raise HTTPException(
-        status_code=500,
-        detail=f"Failed to fetch data for {symbol} after {max_retries} attempts"
-    )
+    if data.empty:
+        raise ValueError(f"No data retrieved for {symbol}. Please try again later.")
+    
+    # Handle multi-level column names from yfinance
+    if isinstance(data.columns, pd.MultiIndex):
+        # Extract just the first level of the multi-index
+        data.columns = [col[0] for col in data.columns]
+    
+    # Ensure column names are correct
+    data.columns = [str(col).replace(' ', '_') for col in data.columns]
+    
+    # Resample if needed (for 4h)
+    if timeframe == "4h" and tf_config["interval"] == "1h":
+        data = data.resample('4h').agg({
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
+        })
+    
+    # Add technical indicators
+    data['SMA_10'] = data['Close'].rolling(window=10).mean()
+    data['RSI'] = 100 - (100 / (1 + (data['Close'].diff().rolling(14).mean() / data['Close'].diff().rolling(14).std())))
+    data['MACD'] = data['Close'].ewm(span=12, adjust=False).mean() - data['Close'].ewm(span=26, adjust=False).mean()
+    data['Bollinger_Upper'] = data['Close'].rolling(window=20).mean() + 2 * data['Close'].rolling(window=20).std()
+    data['Bollinger_Lower'] = data['Close'].rolling(window=20).mean() - 2 * data['Close'].rolling(window=20).std()
+    
+    # Drop any rows with NaN values
+    data.dropna(inplace=True)
+    
+    # Verify required columns exist
+    required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+    missing_columns = [col for col in required_columns if col not in data.columns]
+    if missing_columns:
+        raise ValueError(f"Missing required columns: {missing_columns}")
+    
+    return data
 
 def predict_next_price(symbol, timeframe="24h"):
     """Predict next price with timeframe support"""
