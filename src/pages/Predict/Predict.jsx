@@ -95,6 +95,10 @@ const Predict = () => {
   const [showPredictionLine, setShowPredictionLine] = useState(false)
   const [predictionStartTime, setPredictionStartTime] = useState(0)
 
+  // Add new state for tracking active timeframe
+  const [activeTimeframe, setActiveTimeframe] = useState(null)
+  const [isTimeframeChanging, setIsTimeframeChanging] = useState(false)
+
   // Chart interaction functions
   const handleZoomIn = () => {
     setChartScale(prev => Math.min(prev * 1.2, 3))
@@ -135,8 +139,171 @@ const Predict = () => {
     setIsDragging(false)
   }
 
+  // Enhanced handleTimeframeChange function
+  const handleTimeframeChange = async (newTimeframe) => {
+    if (newTimeframe === timeframe || isTimeframeChanging) return;
+    
+    setIsTimeframeChanging(true);
+    setPendingTimeframe(newTimeframe);
+    setTimeframe(newTimeframe); // Add this line to update the timeframe state
+    
+    // Add visual feedback for the selected timeframe
+    const timeframeButtons = document.querySelectorAll('.timeframe-btn');
+    timeframeButtons.forEach(btn => {
+      if (btn.textContent === newTimeframe) {
+        btn.classList.add('pending');
+      } else {
+        btn.classList.remove('pending');
+      }
+    });
+    
+    showNotification({
+      type: 'info',
+      message: `Updating to ${newTimeframe} timeframe...`
+    });
+    
+    // Reset prediction states
+    setPrediction(null);
+    setPredictionError(null);
+    setPredictionLoading(false);
+    
+    // Clear existing chart data
+    if (chartRef.current) {
+      chartRef.current.destroy();
+    }
+    
+    const fetchData = async () => {
+      try {
+        // First try to fetch historical data
+        const response = await fetch('/api/predictions/historical', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            symbol: selectedItem.symbol,
+            timeframe: newTimeframe
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to fetch historical data');
+        }
+        
+        const data = await response.json();
+        
+        if (data && data.length > 0) {
+          // Generate extended data for scrolling
+          const extendedData = generateExtendedData(data, newTimeframe);
+          setChartData(extendedData);
+          
+          // Update chart with new data
+          updateChart(extendedData);
+          
+          // Start training for the new timeframe
+          setPredictionLoading(true);
+          try {
+            const trainResponse = await fetch('/api/predictions/train', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                symbol: selectedItem.symbol,
+                timeframe: newTimeframe,
+                data: extendedData
+              })
+            });
+            
+            if (!trainResponse.ok) {
+              throw new Error('Training failed');
+            }
+            
+            const trainResult = await trainResponse.json();
+            if (trainResult.success) {
+              // Fetch predictions after training is complete
+              await fetchPredictions(newTimeframe);
+            } else {
+              throw new Error(trainResult.error || 'Training failed');
+            }
+          } catch (trainError) {
+            console.error('Training error:', trainError);
+            showNotification({
+              type: 'error',
+              message: 'Model training failed',
+              details: trainError.message
+            });
+          } finally {
+            setPredictionLoading(false);
+          }
+        } else {
+          throw new Error('No historical data received');
+        }
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        // Fallback to generated data
+        const fallbackData = generateHistoricalData(selectedItem, newTimeframe);
+        setChartData(fallbackData);
+        updateChart(fallbackData);
+        
+        showNotification({
+          type: 'warning',
+          message: 'Using generated data due to fetch error'
+        });
+      } finally {
+        setIsTimeframeChanging(false);
+        setPendingTimeframe(null);
+        
+        // Remove pending class from all buttons
+        timeframeButtons.forEach(btn => btn.classList.remove('pending'));
+      }
+    };
+    
+    await fetchData();
+  };
+
+  // Enhanced useEffect for chart data updates
+  useEffect(() => {
+    if (!selectedItem || !activeTimeframe) return
+
+    const fetchInitialData = async () => {
+      setIsLoading(true)
+      setLocalError(null)
+
+      try {
+        // Try to fetch data from API
+        const data = await fetchHistoricalData(selectedItem, activeTimeframe)
+        if (data && data.length > 0) {
+          setChartData(data)
+          // Generate extended data for scrolling
+          const extendedData = generateExtendedHistoricalData(data, selectedItem)
+          setExtendedChartData(extendedData)
+        }
+      } catch (err) {
+        console.error("Error fetching initial data:", err)
+        // Fallback to generated data
+        const data = generateRealisticData(selectedItem, activeTimeframe)
+        setChartData(data)
+        // Generate extended data for scrolling
+        const extendedData = generateExtendedHistoricalData(data, selectedItem)
+        setExtendedChartData(extendedData)
+
+        showNotification({
+          type: "info",
+          message: "Using market simulation",
+          details: "Real-time data temporarily unavailable. Using advanced market simulation.",
+        })
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    fetchInitialData()
+  }, [selectedItem, activeTimeframe]) // Only run when selectedItem or activeTimeframe changes
+
+  // Enhanced drawChart function to prevent unnecessary updates
   const drawChart = () => {
-    if (!chartRef.current || !chartData.length) return
+    if (!chartRef.current || !chartData.length || isTimeframeChanging) return
 
     const canvas = chartRef.current
     const ctx = canvas.getContext('2d')
@@ -169,40 +336,27 @@ const Predict = () => {
     ctx.scale(chartScale, chartScale)
     ctx.translate(-width / 2 + chartOffset, -height / 2 + chartVerticalOffset)
 
-    // Calculate animation progress
-    const animationProgress = showPredictionLine 
-      ? Math.min(1, (Date.now() - predictionStartTime) / (timeframe === "4h" || timeframe === "30m" ? 3000 : 2000))
-      : 1
-
-    // Draw cyan line (historical data)
+    // Draw cyan line (historical data) with enhanced smoothing
     ctx.beginPath()
     ctx.shadowColor = 'rgba(91, 192, 222, 0.3)'
     ctx.shadowBlur = 10
     ctx.shadowOffsetY = 5
     ctx.strokeStyle = '#5bc0de'
-    ctx.lineWidth = 2
+    ctx.lineWidth = timeframe === "30m" ? 2.5 : 2
     ctx.globalAlpha = 0.8
 
-    let cyanFirstValidPoint = true
-    const centerIndex = Math.floor(chartData.length / 2)
-    
-    // Draw cyan line - full line if no prediction, half line if prediction active
-    const cyanDataPoints = showPredictionLine ? chartData.slice(0, centerIndex) : chartData
-    
-    // Draw cyan line with animation
-    cyanDataPoints.forEach((point, index) => {
+    let firstValidPoint = true
+    chartData.forEach((point, index) => {
       if (!point || point.price === undefined || isNaN(point.price)) return
 
       const x = padding + (chartWidth * (index / (chartData.length - 1)))
       const y = padding + (chartHeight * (1 - (point.price - minValue) / valueRange)) + 3
 
-      if (index / cyanDataPoints.length <= animationProgress) {
-        if (cyanFirstValidPoint) {
-          ctx.moveTo(x, y)
-          cyanFirstValidPoint = false
-        } else {
-          ctx.lineTo(x, y)
-        }
+      if (firstValidPoint) {
+        ctx.moveTo(x, y)
+        firstValidPoint = false
+      } else {
+        ctx.lineTo(x, y)
       }
     })
 
@@ -210,169 +364,53 @@ const Predict = () => {
     ctx.shadowBlur = 0
     ctx.globalAlpha = 1.0
 
-    // Draw orange line (prediction) with strict timeframe boundary
-    if (showPredictionLine) {
-      ctx.beginPath()
-      ctx.shadowColor = 'rgba(255, 165, 0, 0.3)'
-      ctx.shadowBlur = 10
-      ctx.shadowOffsetY = 5
-      ctx.strokeStyle = '#FFA500'
-      ctx.lineWidth = 1.5
-      ctx.globalAlpha = 0.7
+    // Draw prediction line if available
+    if (showPredictionLine && predictedPrice) {
+      const lastPoint = chartData[chartData.length - 1]
+      if (lastPoint) {
+        ctx.beginPath()
+        ctx.strokeStyle = '#FFA500'
+        ctx.lineWidth = 2
+        ctx.globalAlpha = 0.7
 
-      let orangeFirstValidPoint = true
-      
-      // Calculate the exact timeframe boundary
-      const lastHistoricalPoint = chartData[chartData.length - 2]
-      const timeframeBoundary = lastHistoricalPoint ? lastHistoricalPoint.fullTime.getTime() + getTimeframeMilliseconds(timeframe) : null
-      
-      // Draw prediction line strictly within timeframe
-      chartData.forEach((point, index) => {
-        if (!point || point.price === undefined || isNaN(point.price)) return
+        const lastX = padding + (chartWidth * ((chartData.length - 1) / (chartData.length - 1)))
+        const lastY = padding + (chartHeight * (1 - (lastPoint.price - minValue) / valueRange))
+        const predX = padding + (chartWidth * (chartData.length / (chartData.length - 1)))
+        const predY = padding + (chartHeight * (1 - (predictedPrice - minValue) / valueRange))
 
-        // Skip points beyond the timeframe boundary
-        if (timeframeBoundary && point.fullTime.getTime() > timeframeBoundary) {
-          return
-        }
-
-        const x = padding + (chartWidth * (index / (chartData.length - 1)))
-        const y = padding + (chartHeight * (1 - (point.price - minValue) / valueRange))
-
-        if (index / chartData.length <= animationProgress) {
-          if (orangeFirstValidPoint) {
-            ctx.moveTo(x, y)
-            orangeFirstValidPoint = false
-          } else {
-            ctx.lineTo(x, y)
-          }
-        }
-      })
-
-      ctx.stroke()
-      ctx.shadowBlur = 0
-      ctx.globalAlpha = 1.0
-    }
-
-    // Add soft gradient shadows below the lines
-    if (cyanDataPoints.length > 0) {
-      // Create gradient for cyan line shadow
-      const cyanGradient = ctx.createLinearGradient(0, padding, 0, height - padding)
-      cyanGradient.addColorStop(0, 'rgba(91, 192, 222, 0.15)')
-      cyanGradient.addColorStop(1, 'rgba(91, 192, 222, 0)')
-      
-      // Draw cyan shadow area
-      ctx.beginPath()
-      ctx.fillStyle = cyanGradient
-      
-      // Start from the first point
-      const firstPoint = cyanDataPoints[0]
-      if (firstPoint && firstPoint.price !== undefined && !isNaN(firstPoint.price)) {
-        const firstX = padding
-        const firstY = padding + (chartHeight * (1 - (firstPoint.price - minValue) / valueRange)) + 3
-        
-        ctx.moveTo(firstX, firstY)
-        
-        // Draw along the line
-        cyanDataPoints.forEach((point, index) => {
-          if (!point || point.price === undefined || isNaN(point.price)) return
-          
-          const x = padding + (chartWidth * (index / (chartData.length - 1)))
-          const y = padding + (chartHeight * (1 - (point.price - minValue) / valueRange)) + 3
-          
-          if (index / cyanDataPoints.length <= animationProgress) {
-            ctx.lineTo(x, y)
-          }
-        })
-        
-        // Complete the path to create a filled area
-        const lastPoint = cyanDataPoints[cyanDataPoints.length - 1]
-        if (lastPoint && lastPoint.price !== undefined && !isNaN(lastPoint.price)) {
-          const lastX = padding + (chartWidth * ((cyanDataPoints.length - 1) / (chartData.length - 1)))
-          const lastY = padding + (chartHeight * (1 - (lastPoint.price - minValue) / valueRange)) + 3
-          
-          ctx.lineTo(lastX, height - padding)
-          ctx.lineTo(padding, height - padding)
-          ctx.closePath()
-          ctx.fill()
-        }
+        ctx.moveTo(lastX, lastY)
+        ctx.lineTo(predX, predY)
+        ctx.stroke()
+        ctx.globalAlpha = 1.0
       }
-    }
-    
-    // Add shadow for orange prediction line
-    if (showPredictionLine && chartData.length > 0) {
-      // Create gradient for orange line shadow
-      const orangeGradient = ctx.createLinearGradient(0, padding, 0, height - padding)
-      orangeGradient.addColorStop(0, 'rgba(255, 165, 0, 0.15)')
-      orangeGradient.addColorStop(1, 'rgba(255, 165, 0, 0)')
-      
-      // Draw orange shadow area
-      ctx.beginPath()
-      ctx.fillStyle = orangeGradient
-      
-      // Start from the first point
-      const firstPoint = chartData[0]
-      if (firstPoint && firstPoint.price !== undefined && !isNaN(firstPoint.price)) {
-        const firstX = padding
-        const firstY = padding + (chartHeight * (1 - (firstPoint.price - minValue) / valueRange))
-        
-        ctx.moveTo(firstX, firstY)
-        
-        // Draw along the line
-        chartData.forEach((point, index) => {
-          if (!point || point.price === undefined || isNaN(point.price)) return
-          
-          const x = padding + (chartWidth * (index / (chartData.length - 1)))
-          const y = padding + (chartHeight * (1 - (point.price - minValue) / valueRange))
-          
-          if (index / chartData.length <= animationProgress) {
-            ctx.lineTo(x, y)
-          }
-        })
-        
-        // Complete the path to create a filled area
-        const lastPoint = chartData[chartData.length - 1]
-        if (lastPoint && lastPoint.price !== undefined && !isNaN(lastPoint.price)) {
-          const lastX = padding + (chartWidth * ((chartData.length - 1) / (chartData.length - 1)))
-          const lastY = padding + (chartHeight * (1 - (lastPoint.price - minValue) / valueRange))
-          
-          ctx.lineTo(lastX, height - padding)
-          ctx.lineTo(padding, height - padding)
-          ctx.closePath()
-          ctx.fill()
-        }
-      }
-    }
-
-    // Request next animation frame if either line is still animating
-    if (showPredictionLine && Date.now() - predictionStartTime < 2000) {
-        requestAnimationFrame(drawChart)
     }
 
     ctx.restore()
 
-    // Draw grid lines
-    ctx.lineWidth = 1.5 // Increased line width for bolder lines
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)' // Increased opacity for sharper lines
+    // Draw grid lines and labels
+    drawGridLines(ctx, width, height, padding, chartWidth, chartHeight, minValue, maxValue, valueRange)
+  }
 
+  // Add new function to draw grid lines
+  const drawGridLines = (ctx, width, height, padding, chartWidth, chartHeight, minValue, maxValue, valueRange) => {
     // Draw horizontal grid lines
     const gridLines = 5
     for (let i = 0; i <= gridLines; i++) {
-        const y = padding + (chartHeight * (1 - i / gridLines))
-        ctx.beginPath()
-        ctx.moveTo(padding, y)
-        ctx.lineTo(width - padding, y)
-        ctx.stroke()
+      const y = padding + (chartHeight * (1 - i / gridLines))
+      ctx.beginPath()
+      ctx.moveTo(padding, y)
+      ctx.lineTo(width - padding, y)
+      ctx.stroke()
 
-        // Draw value labels with improved visibility
-        const value = minValue + (valueRange * (i / gridLines))
-        ctx.fillStyle = '#ffffff' // Pure white color
-        ctx.font = '8px Arial' // Previous font size
-        ctx.textAlign = 'right'
-        // Position the text 10px more to the left
-        ctx.fillText(value.toFixed(2), padding - 5, y + 3)
+      // Draw value labels
+      const value = minValue + (valueRange * (i / gridLines))
+      ctx.fillStyle = '#ffffff'
+      ctx.font = '8px Arial'
+      ctx.textAlign = 'right'
+      ctx.fillText(value.toFixed(2), padding - 5, y + 3)
     }
 
-    // Draw grid lines and labels
+    // Draw vertical grid lines and time labels
     const futureTimePoints = generateFutureTimePoints(timeframe)
     futureTimePoints.forEach((point, i) => {
       const xPos = padding + (chartWidth * (i / (futureTimePoints.length - 1)))
@@ -391,7 +429,7 @@ const Predict = () => {
       ctx.fillText(formatTimeLabel(point.time), xPos, height - padding + 15)
     })
   }
-  
+
   const [utcTime, setUtcTime] = useState(new Date())
 
   // Update UTC time every minute
@@ -637,20 +675,38 @@ const Predict = () => {
     }
   }
 
-  // Enhanced fetch with rate limiting
+  // Enhanced fetchWithRateLimit function with better 30m handling
   const fetchWithRateLimit = async (url, options = {}) => {
     const now = Date.now()
     const timeSinceLastRequest = now - lastRequestTime.current
+    const retryCount = apiRetryCount.current
 
-    if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
-      // Queue the request
-      return new Promise((resolve, reject) => {
-        setRequestQueue(prev => [...prev, { url, options, resolve, reject }])
-      })
+    // If we've hit the rate limit too many times, wait longer
+    const waitTime = retryCount > 0 ? RATE_LIMIT_DELAY * Math.pow(2, retryCount) : RATE_LIMIT_DELAY
+
+    // Add exponential backoff for 429 errors
+    if (timeSinceLastRequest < waitTime) {
+      await new Promise(resolve => setTimeout(resolve, waitTime - timeSinceLastRequest))
     }
 
-    lastRequestTime.current = now
-    return fetchWithTimeout(url, options)
+    try {
+      lastRequestTime.current = now
+      const response = await fetchWithTimeout(url, options)
+
+      if (response.status === 429) {
+        // Rate limit hit - increment retry count and wait
+        apiRetryCount.current = Math.min(apiRetryCount.current + 1, MAX_RETRIES)
+        await new Promise(resolve => setTimeout(resolve, waitTime * 2))
+        return fetchWithRateLimit(url, options) // Retry
+      }
+
+      // Reset retry count on success
+      apiRetryCount.current = 0
+      return response
+    } catch (error) {
+      console.error("Fetch error:", error)
+      throw error
+    }
   }
 
   // Process request queue
@@ -1108,52 +1164,34 @@ const Predict = () => {
 
       try {
         // Try to fetch data from API
-        const data = await fetchHistoricalData(selectedItem, timeframe)
-        setChartData(data)
-
-        // Generate extended data for scrolling
-        const extendedData = generateExtendedHistoricalData(data, selectedItem)
-        setExtendedChartData(extendedData)
-
-        setIsLoading(false)
+        const data = await fetchHistoricalData(selectedItem, activeTimeframe)
+        if (data && data.length > 0) {
+          setChartData(data)
+          // Generate extended data for scrolling
+          const extendedData = generateExtendedHistoricalData(data, selectedItem)
+          setExtendedChartData(extendedData)
+        }
       } catch (err) {
         console.error("Error fetching initial data:", err)
-
         // Fallback to generated data
-        const data = generateRealisticData(selectedItem, timeframe)
+        const data = generateRealisticData(selectedItem, activeTimeframe)
         setChartData(data)
-
         // Generate extended data for scrolling
         const extendedData = generateExtendedHistoricalData(data, selectedItem)
         setExtendedChartData(extendedData)
 
-        setIsLoading(false)
-
-        // Show notification but don't show error in UI to avoid alarming users
         showNotification({
           type: "info",
           message: "Using market simulation",
-          details:
-            "Real-time data temporarily unavailable. Using advanced market simulation. Please check your internet connection or try again later.",
+          details: "Real-time data temporarily unavailable. Using advanced market simulation.",
         })
+      } finally {
+        setIsLoading(false)
       }
     }
 
     fetchInitialData()
-
-    // Cleanup animation on unmount
-    return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current)
-      }
-      if (liveUpdateRef.current) {
-        clearInterval(liveUpdateRef.current)
-      }
-      if (notificationTimeoutRef.current) {
-        clearTimeout(notificationTimeoutRef.current)
-      }
-    }
-  }, [selectedItem, timeframe]) // Only run on initial mount and when selectedItem changes
+  }, [selectedItem, activeTimeframe]) // Only run when selectedItem or activeTimeframe changes
 
   // Generate extended historical data for scrolling
   const generateExtendedHistoricalData = (data, item) => {
@@ -1246,7 +1284,7 @@ const Predict = () => {
     }
   }
 
-  // Fetch historical data from API with improved error handling and multiple sources
+  // Enhanced fetchHistoricalData function with better error handling
   const fetchHistoricalData = async (item, tf) => {
     if (!item) return []
 
@@ -1254,124 +1292,214 @@ const Predict = () => {
     const symbol = item.symbol.toLowerCase()
     const id = item.id ? item.id.toLowerCase() : symbol
 
-    // Try multiple APIs in sequence with proper error handling
     try {
-      // First try CoinGecko API
+      // First try CoinGecko API with enhanced rate limiting and headers
       try {
-        const days = tf === "24h" ? 1 : tf === "4h" ? 0.17 : tf === "1h" ? 0.042 : 0.021
+        // Increase days for 30m timeframe to get more data points
+        const days = tf === "30m" ? 2 : tf === "24h" ? 1 : tf === "4h" ? 0.17 : tf === "1h" ? 0.042 : 0.021
         const response = await fetchWithRateLimit(
-          `https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=usd&days=${days}`,
-          { timeout: 5000 }
+          `https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=usd&days=${days}&interval=${tf === "30m" ? "m5" : "auto"}`,
+          { 
+            timeout: 8000,
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+              'x-cg-pro-api-key': process.env.REACT_APP_COINGECKO_API_KEY || ''
+            }
+          }
         )
 
         if (response.ok) {
           const data = await response.json()
           if (data.prices && data.prices.length > 0) {
-            return data.prices.map(([timestamp, price]) => ({
-              time: new Date(timestamp).toLocaleTimeString(),
-              price: price,
-              fullTime: new Date(timestamp),
-            }))
+            // Process data with enhanced smoothing for 30m
+            const processedData = tf === "30m" 
+              ? process30mData(data.prices)
+              : data.prices.map(([timestamp, price]) => ({
+                  time: new Date(timestamp).toLocaleTimeString(),
+                  price: price,
+                  fullTime: new Date(timestamp),
+                }))
+            return processedData
           }
+        } else if (response.status === 401) {
+          console.log("CoinGecko API key missing or invalid, trying alternative...")
+          throw new Error("API key required")
         }
       } catch (error) {
         console.log("CoinGecko API failed:", error.message)
       }
 
-      // If CoinGecko fails, try CoinCap
+      // If CoinGecko fails, try Binance API
       try {
-        const data = await fetchFromCoinCap(id, symbol, tf)
-        if (data && data.historicalData.length > 0) {
-          return data.historicalData
+        const binanceData = await fetchFromBinance(symbol, tf)
+        if (binanceData && binanceData.length > 0) {
+          return binanceData
         }
       } catch (error) {
-        console.log("CoinCap API failed:", error.message)
+        console.log("Binance API failed:", error.message)
       }
 
-      // If all APIs fail, throw error to trigger fallback
-      throw new Error("Could not fetch sufficient data from any API")
+      // If both APIs fail, try our backend API
+      try {
+        const response = await fetchWithTimeout(
+          `${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/api/v1/predictions/historical`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              symbol: symbol,
+              timeframe: tf
+            })
+          }
+        )
+
+        if (response.ok) {
+          const data = await response.json()
+          if (data && data.length > 0) {
+            return data.map(item => ({
+              time: new Date(item.timestamp).toLocaleTimeString(),
+              price: item.price,
+              fullTime: new Date(item.timestamp),
+            }))
+          }
+        }
+      } catch (error) {
+        console.log("Backend API failed:", error.message)
+      }
+
+      // If all APIs fail, generate realistic data
+      console.log("Using fallback data generation")
+      return generateRealisticData(item, tf)
     } catch (error) {
-      console.error("All API attempts failed:", error)
-      throw error
+      console.error("Error in fetchHistoricalData:", error)
+      // Return fallback data instead of throwing error
+      return generateRealisticData(item, tf)
     }
   }
 
-  // Fetch from CoinGecko API with timeout
-  const fetchFromCoinGecko = async (id, symbol, tf) => {
-    try {
-      // Convert timeframe to days for CoinGecko
-      const days = tf === "24h" ? 1 : tf === "4h" ? 0.17 : tf === "1h" ? 0.042 : 0.021
+  // Enhanced process30mData function with better smoothing and trend analysis
+  const process30mData = (prices) => {
+    if (!prices || prices.length === 0) return []
 
-      // Try different ID formats that CoinGecko might use
-      const possibleIds = [id, symbol, `${symbol}-token`, `${id}-token`]
+    const processedData = []
+    const interval = 30 * 60 * 1000 // 30 minutes in milliseconds
+    let lastTimestamp = null
 
-      for (const possibleId of possibleIds) {
-        try {
-          const geckoUrl = `https://api.coingecko.com/api/v3/coins/${possibleId}/market_chart?vs_currency=usd&days=${days}`
+    // Sort prices by timestamp to ensure chronological order
+    const sortedPrices = [...prices].sort((a, b) => a[0] - b[0])
 
-          const geckoResponse = await fetchWithTimeout(geckoUrl, { timeout: 5000 })
+    // Calculate exponential moving average for smoother data
+    const emaPeriod = 5
+    const smoothingFactor = 2 / (emaPeriod + 1)
+    const emaValues = []
+    let ema = sortedPrices[0][1]
 
-          if (!geckoResponse.ok) {
-            continue // Try next ID format
+    for (let i = 0; i < sortedPrices.length; i++) {
+      ema = (sortedPrices[i][1] - ema) * smoothingFactor + ema
+      emaValues.push([sortedPrices[i][0], ema])
+    }
+
+    // Apply additional smoothing using a larger window for trend analysis
+    const trendWindow = 7
+    const smoothedPrices = []
+
+    for (let i = 0; i < emaValues.length; i++) {
+      const start = Math.max(0, i - trendWindow + 1)
+      const window = emaValues.slice(start, i + 1)
+      const avg = window.reduce((sum, [_, price]) => sum + price, 0) / window.length
+      smoothedPrices.push([emaValues[i][0], avg])
+    }
+
+    // Process data with proper intervals and enhanced smoothing
+    smoothedPrices.forEach(([timestamp, price]) => {
+      const currentTime = new Date(timestamp)
+      
+      // Only add data points that are 30 minutes apart
+      if (!lastTimestamp || (currentTime - lastTimestamp) >= interval) {
+        processedData.push({
+          time: currentTime.toLocaleTimeString(),
+          price: price,
+          fullTime: currentTime,
+        })
+        lastTimestamp = currentTime
+      }
+    })
+
+    // Ensure we have enough data points
+    if (processedData.length < 48) { // At least 24 hours worth of 30m intervals
+      // Fill in missing data points using interpolation
+      const filledData = []
+      for (let i = 0; i < processedData.length - 1; i++) {
+        filledData.push(processedData[i])
+        
+        const current = processedData[i]
+        const next = processedData[i + 1]
+        const timeDiff = next.fullTime - current.fullTime
+        
+        if (timeDiff > interval * 1.5) { // If gap is more than 1.5 intervals
+          const numPoints = Math.floor(timeDiff / interval) - 1
+          for (let j = 1; j <= numPoints; j++) {
+            const interpolatedTime = new Date(current.fullTime.getTime() + interval * j)
+            const interpolatedPrice = current.price + (next.price - current.price) * (j / (numPoints + 1))
+            filledData.push({
+              time: interpolatedTime.toLocaleTimeString(),
+              price: interpolatedPrice,
+              fullTime: interpolatedTime,
+            })
           }
-
-          const geckoData = await geckoResponse.json()
-
-          if (!geckoData.prices || geckoData.prices.length < 10) {
-            continue // Try next ID format
-          }
-
-          return geckoData.prices.map(([timestamp, price]) => ({
-            time: new Date(timestamp).toLocaleTimeString(),
-            price: price,
-            fullTime: new Date(timestamp),
-          }))
-        } catch (innerError) {
-          console.error(`CoinGecko API error with ID ${possibleId}:`, innerError)
-          continue // Try next ID format
         }
       }
-
-      throw new Error("All CoinGecko ID attempts failed")
-    } catch (error) {
-      console.error("CoinGecko API error:", error)
-      throw error
+      filledData.push(processedData[processedData.length - 1])
+      return filledData
     }
+
+    return processedData
   }
 
-  // New function to fetch from Binance API
+  // Enhanced fetchFromBinance function with better error handling
   const fetchFromBinance = async (symbol, tf) => {
     try {
       // Convert our timeframe to Binance interval format
       const interval = tf === "30m" ? "30m" : tf === "1h" ? "1h" : tf === "4h" ? "4h" : "1d"
 
-      // Binance uses uppercase symbols with USDT pair
-      const binanceSymbol = symbol.toUpperCase() + "USDT"
+      // Try different symbol formats
+      const possibleSymbols = [
+        symbol.toUpperCase() + "USDT",
+        symbol.toUpperCase() + "BUSD",
+        symbol.toUpperCase() + "BTC"
+      ]
 
-      // Calculate limit based on timeframe
-      const limit = tf === "30m" ? 60 : tf === "1h" ? 60 : tf === "4h" ? 60 : 24
+      for (const binanceSymbol of possibleSymbols) {
+        try {
+          // Calculate limit based on timeframe
+          const limit = tf === "30m" ? 60 : tf === "1h" ? 60 : tf === "4h" ? 60 : 24
 
-      const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`
+          const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`
 
-      const binanceResponse = await fetchWithTimeout(binanceUrl, { timeout: 5000 })
+          const binanceResponse = await fetchWithTimeout(binanceUrl, { timeout: 5000 })
 
-      if (!binanceResponse.ok) {
-        throw new Error(`Binance API error: ${binanceResponse.status}`)
+          if (binanceResponse.ok) {
+            const binanceData = await binanceResponse.json()
+
+            if (binanceData && binanceData.length > 0) {
+              // Binance kline format: [openTime, open, high, low, close, volume, closeTime, ...]
+              return binanceData.map((kline) => ({
+                time: new Date(kline[0]).toLocaleTimeString(),
+                price: Number.parseFloat(kline[4]),
+                fullTime: new Date(kline[0]),
+              }))
+            }
+          }
+        } catch (error) {
+          console.log(`Binance API failed for symbol ${binanceSymbol}:`, error.message)
+          continue // Try next symbol format
+        }
       }
 
-      const binanceData = await binanceResponse.json()
-
-      if (!binanceData || binanceData.length < 10) {
-        throw new Error("Insufficient data points from Binance API")
-      }
-
-      // Binance kline format: [openTime, open, high, low, close, volume, closeTime, ...]
-      // We'll use the close price (index 4)
-      return binanceData.map((kline) => ({
-        time: new Date(kline[0]).toLocaleTimeString(),
-        price: Number.parseFloat(kline[4]),
-        fullTime: new Date(kline[0]),
-      }))
+      throw new Error("All Binance symbol attempts failed")
     } catch (error) {
       console.error("Binance API error:", error)
       throw error
@@ -1382,13 +1510,13 @@ const Predict = () => {
   const timeframeToInterval = (tf) => {
     switch (tf) {
       case "30m":
-        return "m1" // 1 minute
+        return "m5" // Changed from m1 to m5 for better data granularity
       case "1h":
-        return "m5" // 5 minutes
+        return "m15" // Changed from m5 to m15 for better data granularity
       case "4h":
-        return "h1" // 1 hour
+        return "h1"
       case "24h":
-        return "h1" // 1 hour
+        return "h1"
       default:
         return "h1"
     }
@@ -1399,19 +1527,19 @@ const Predict = () => {
     const now = Date.now()
     switch (tf) {
       case "30m":
-        return now - 30 * 60 * 1000
+        return now - 2 * 60 * 60 * 1000 // Increased to 2 hours for better data
       case "1h":
-        return now - 60 * 60 * 1000
+        return now - 24 * 60 * 60 * 1000 // 24 hours
       case "4h":
-        return now - 7 * 24 * 60 * 60 * 1000 // 7 days for 4h timeframe
+        return now - 7 * 24 * 60 * 60 * 1000 // 7 days
       case "24h":
-        return now - 30 * 24 * 60 * 60 * 1000 // 30 days for 24h timeframe
+        return now - 30 * 24 * 60 * 60 * 1000 // 30 days
       default:
         return now - 24 * 60 * 60 * 1000
     }
   }
 
-  // Fetch historical data for the chart - only when predict is clicked
+  // Enhanced fetchChartData function with better error handling
   const fetchChartData = async () => {
     if (!selectedItem) return
 
@@ -1431,24 +1559,21 @@ const Predict = () => {
             body: JSON.stringify({
               symbol: selectedItem.symbol,
               timeframe: timeframe,
-              days: timeframe === "4h" ? 7 : timeframe === "24h" ? 30 : 1 // Request more days for 4h and 24h
+              days: timeframe === "4h" ? 7 : timeframe === "24h" ? 30 : 1
             })
           }
         )
 
-        if (!response.ok) {
-          throw new Error(`Backend API error: ${response.status}`)
-        }
-
-        const data = await response.json()
-        if (data && data.actuals && data.predictions) {
-          // Process data with proper time intervals for 4h
-          const processedData = timeframe === "4h" 
-            ? process4hData(data, selectedItem)
-            : processApiData(data, selectedItem)
-          setChartData(processedData)
-          setIsLoading(false)
-          return
+        if (response.ok) {
+          const data = await response.json()
+          if (data && data.actuals && data.predictions) {
+            const processedData = timeframe === "4h" 
+              ? process4hData(data, selectedItem)
+              : processApiData(data, selectedItem)
+            setChartData(processedData)
+            setIsLoading(false)
+            return
+          }
         }
       } catch (error) {
         console.log("Backend API failed, trying CoinGecko...")
@@ -1456,27 +1581,9 @@ const Predict = () => {
 
       // If backend fails, try CoinGecko
       try {
-        const days = timeframe === "4h" ? 7 : timeframe === "24h" ? 30 : 1
-        const response = await fetchWithTimeout(
-          `https://api.coingecko.com/api/v3/coins/${selectedItem.id}/market_chart?vs_currency=usd&days=${days}&interval=${timeframeToInterval(timeframe)}`,
-          {
-            method: "GET",
-            headers: {
-              "Content-Type": "application/json",
-            }
-          }
-        )
-
-        if (!response.ok) {
-          throw new Error(`CoinGecko API error: ${response.status}`)
-        }
-
-        const data = await response.json()
-        if (data && data.prices) {
-          const processedData = timeframe === "4h"
-            ? process4hData(data, selectedItem)
-            : processCoinGeckoData(data, selectedItem)
-          setChartData(processedData)
+        const data = await fetchHistoricalData(selectedItem, timeframe)
+        if (data && data.length > 0) {
+          setChartData(data)
           setIsLoading(false)
           return
         }
@@ -1493,7 +1600,7 @@ const Predict = () => {
 
     } catch (error) {
       console.error("Error fetching chart data:", error)
-      setLocalError("Failed to fetch chart data. Using fallback data.")
+      setLocalError("Using market simulation")
       const fallbackData = timeframe === "4h"
         ? generate4hFallbackData(selectedItem)
         : generateRealisticData(selectedItem, timeframe)
@@ -1506,12 +1613,17 @@ const Predict = () => {
   const process4hData = (data, item) => {
     const processedData = []
     const now = new Date()
-    const startTime = getStartTime("4h")
+    const startTime = getStartTime(timeframe)
     
     // Process actual data
     if (data.actuals && data.actuals.length > 0) {
+      const interval = timeframe === "30m" ? 30 * 60 * 1000 :
+                      timeframe === "1h" ? 60 * 60 * 1000 :
+                      timeframe === "4h" ? 4 * 60 * 60 * 1000 :
+                      24 * 60 * 60 * 1000
+
       data.actuals.forEach((price, index) => {
-        const timestamp = startTime + (index * 4 * 60 * 60 * 1000)
+        const timestamp = startTime + (index * interval)
         processedData.push({
           time: new Date(timestamp),
           fullTime: new Date(timestamp),
@@ -1524,8 +1636,13 @@ const Predict = () => {
     // Process prediction data
     if (data.predictions && data.predictions.length > 0) {
       const lastActualTime = processedData[processedData.length - 1]?.fullTime.getTime() || startTime
+      const interval = timeframe === "30m" ? 30 * 60 * 1000 :
+                      timeframe === "1h" ? 60 * 60 * 1000 :
+                      timeframe === "4h" ? 4 * 60 * 60 * 1000 :
+                      24 * 60 * 60 * 1000
+
       data.predictions.forEach((price, index) => {
-        const timestamp = lastActualTime + ((index + 1) * 4 * 60 * 60 * 1000)
+        const timestamp = lastActualTime + ((index + 1) * interval)
         processedData.push({
           time: new Date(timestamp),
           fullTime: new Date(timestamp),
@@ -1542,22 +1659,34 @@ const Predict = () => {
   const generate4hFallbackData = (item) => {
     const data = []
     const now = new Date()
-    const startTime = getStartTime("4h")
-    const hours = 7 * 24 // 7 days worth of 4h intervals
+    const startTime = getStartTime(timeframe)
+    
+    // Calculate number of points based on timeframe
+    const points = timeframe === "30m" ? 48 : // 24 hours worth of 30m intervals
+                   timeframe === "1h" ? 24 : // 24 hours
+                   timeframe === "4h" ? 42 : // 7 days
+                   30 // 30 days for 24h
+
     const basePrice = item.current_price || 1000
     let lastPrice = basePrice
 
-    for (let i = 0; i < hours / 4; i++) {
-      const timestamp = startTime + (i * 4 * 60 * 60 * 1000)
-      // Generate realistic price movement
-      const change = (Math.random() - 0.5) * 0.02 * lastPrice
+    for (let i = 0; i < points; i++) {
+      const interval = timeframe === "30m" ? 30 * 60 * 1000 :
+                      timeframe === "1h" ? 60 * 60 * 1000 :
+                      timeframe === "4h" ? 4 * 60 * 60 * 1000 :
+                      24 * 60 * 60 * 1000
+
+      const timestamp = startTime + (i * interval)
+      // Generate realistic price movement with reduced volatility for 30m
+      const volatility = timeframe === "30m" ? 0.005 : 0.02
+      const change = (Math.random() - 0.5) * volatility * lastPrice
       lastPrice = Math.max(0.1, lastPrice + change)
       
       data.push({
         time: new Date(timestamp),
         fullTime: new Date(timestamp),
         price: lastPrice,
-        isPrediction: i >= hours / 4 - 6 // Last 6 points are predictions
+        isPrediction: i >= points - 6 // Last 6 points are predictions
       })
     }
 
@@ -1572,25 +1701,28 @@ const Predict = () => {
     const data = []
     const now = new Date()
 
-    // Standardize to 60 points for all timeframes
-    const points = 60
-    let interval
-
+    // Adjust points and interval based on timeframe
+    let points, interval
     switch (timeframe) {
       case "30m":
+        points = 48 // 24 hours worth of 30m intervals
         interval = 30 * 60 * 1000 // 30 minutes
         break
       case "1h":
-        interval = 60 * 60 * 1000 // 1 hour
+        points = 24 // 24 hours
+        interval = 60 * 60 * 1000
         break
       case "4h":
-        interval = 4 * 60 * 60 * 1000 // 4 hours
+        points = 42 // 7 days
+        interval = 4 * 60 * 60 * 1000
         break
       case "24h":
-        interval = 24 * 60 * 60 * 1000 // 24 hours
+        points = 30 // 30 days
+        interval = 24 * 60 * 60 * 1000
         break
       default:
-        interval = 60 * 60 * 1000 // 1 hour
+        points = 24
+        interval = 60 * 60 * 1000
     }
 
     // Create a more realistic price pattern with trends
@@ -1910,40 +2042,7 @@ const Predict = () => {
     }
   }, [showStats, coinStats])
 
-  // Handle timeframe change
-  const handleTimeframeChange = (tf) => {
-    // Store the selected timeframe
-    setPendingTimeframe(tf)
-
-    // Visual feedback that timeframe was selected
-    const buttons = document.querySelectorAll(".market-predict__timeframe-button")
-    buttons.forEach((button) => {
-      if (button.textContent === tf) {
-        button.classList.add("market-predict__timeframe-button--pending")
-      } else {
-        button.classList.remove("market-predict__timeframe-button--pending")
-      }
-    })
-
-    // Show notification
-    showNotification({
-      type: "info",
-      message: `Updating to ${tf} timeframe`,
-      details: "Fetching new data...",
-    })
-
-    // Update the timeframe in the Redux store and fetch new data
-    setTimeframe(tf)
-
-    // Reset prediction states
-    setShowPrediction(false)
-    setShowPredictionLine(false)
-    setTradingRecommendation(null)
-    setPredictedPrice(null)
-
-    // Fetch new data with the updated timeframe
-    dispatch(FetchLastPredictions({ symbol: selectedItem.symbol, timeframe: tf }))
-  }
+  
 
   // Enhanced notification system
   const showNotification = (notificationData) => {
@@ -2032,7 +2131,7 @@ const Predict = () => {
     return recommendation
   }
 
-  // Modify handlePredict to include trading recommendation
+  // Enhanced handlePredict function with better error handling
   const handlePredict = async () => {
     try {
       // Clear any existing notifications first
@@ -2079,56 +2178,71 @@ const Predict = () => {
 
       setChartData(tempChartData)
       
-      // Dispatch prediction action with current symbol and timeframe
-      const result = await dispatch(PredictNextPrice({ 
-        symbol: selectedItem.symbol, 
-        timeframe 
-      })).unwrap()
+      try {
+        // Dispatch prediction action with current symbol and timeframe
+        const result = await dispatch(PredictNextPrice({ 
+          symbol: selectedItem.symbol, 
+          timeframe 
+        })).unwrap()
 
-      if (result.predicted_price) {
-        // Generate trading recommendation
-        const recommendation = generateTradingRecommendation(
-          result.predicted_price,
-          selectedItem.current_price,
-          timeframe
-        )
-        
-        // Update trading recommendation state
-        setTradingRecommendation(recommendation)
+        if (result.predicted_price) {
+          // Generate trading recommendation
+          const recommendation = generateTradingRecommendation(
+            result.predicted_price,
+            selectedItem.current_price,
+            timeframe
+          )
+          
+          // Update trading recommendation state
+          setTradingRecommendation(recommendation)
 
-        // Update the predicted price in state
-        setPredictedPrice(result.predicted_price)
+          // Update the predicted price in state
+          setPredictedPrice(result.predicted_price)
+          setShowPrediction(true)
+
+          // Update chart with actual prediction
+          const updatedChartData = [
+            ...currentChartData,
+            {
+              time: timeframeBoundary.toLocaleTimeString(),
+              price: result.predicted_price,
+              isPrediction: true,
+              isTemporary: false,
+              fullTime: timeframeBoundary,
+            }
+          ]
+
+          setChartData(updatedChartData)
+          generatePredictionData()
+          setShowProbability(true)
+
+          // Show prediction completion notification
+          setTimeout(() => {
+            showNotification({
+              type: recommendation.action === 'BUY' ? 'success' : 'warning',
+              message: `${recommendation.action} Recommendation for ${selectedItem.name}`,
+              details: `${recommendation.reasoning}\nConfidence: ${recommendation.confidence.toFixed(0)}%`,
+              duration: 5000
+            })
+          }, 1000)
+        }
+      } catch (error) {
+        console.error("Prediction API failed:", error)
+        // Generate fallback prediction
+        const fallbackPrediction = generateFallbackPrediction(selectedItem, timeframe)
+        setPredictedPrice(fallbackPrediction.price)
         setShowPrediction(true)
-
-        // Update chart with actual prediction
-        const updatedChartData = [
-          ...currentChartData,
-          {
-            time: timeframeBoundary.toLocaleTimeString(),
-            price: result.predicted_price,
-            isPrediction: true,
-            isTemporary: false,
-            fullTime: timeframeBoundary,
-          }
-        ]
-
-        setChartData(updatedChartData)
-        generatePredictionData()
-        setShowProbability(true)
-
-        // Show prediction completion notification with trading recommendation
-        setTimeout(() => {
-          showNotification({
-            type: recommendation.action === 'BUY' ? 'success' : 'warning',
-            message: `${recommendation.action} Recommendation for ${selectedItem.name}`,
-            details: `${recommendation.reasoning}\nConfidence: ${recommendation.confidence.toFixed(0)}%`,
-            duration: 5000
-          })
-        }, 1000)
+        
+        showNotification({
+          type: "warning",
+          message: "Using simulated prediction",
+          details: "API prediction failed. Using market simulation.",
+          duration: 3000
+        })
       }
     } catch (error) {
       console.error("Prediction failed:", error)
-      setLocalError(error.message || "Failed to make prediction")
+      setLocalError("Failed to make prediction")
       showNotification({
         type: "error",
         message: `Prediction failed for ${selectedItem.name}`,
@@ -2151,7 +2265,7 @@ const Predict = () => {
     return map[tf] || map["1h"]
   }
 
-  // Generate prediction data based on chart patterns
+  // Enhanced generatePredictionData function with better 30m handling
   const generatePredictionData = () => {
     if (chartData.length === 0) return
 
@@ -2164,51 +2278,60 @@ const Predict = () => {
     }
 
     // Calculate average price change
-    const avgChange =
-      priceChanges.length > 0 ? priceChanges.reduce((sum, change) => sum + change, 0) / priceChanges.length : 0
+    const avgChange = priceChanges.length > 0 
+      ? priceChanges.reduce((sum, change) => sum + change, 0) / priceChanges.length 
+      : 0
 
-    // Calculate volatility (standard deviation of price changes)
-    const volatility =
-      priceChanges.length > 0
-        ? Math.sqrt(
-            priceChanges.reduce((sum, change) => sum + Math.pow(change - avgChange, 2), 0) / priceChanges.length,
-          )
-        : 0.02
+    // Calculate volatility with timeframe-specific adjustments
+    const baseVolatility = priceChanges.length > 0
+      ? Math.sqrt(priceChanges.reduce((sum, change) => sum + Math.pow(change - avgChange, 2), 0) / priceChanges.length)
+      : 0.02
+
+    // Adjust volatility based on timeframe
+    const volatility = timeframe === "30m" 
+      ? baseVolatility * 0.5 // Reduce volatility for 30m timeframe
+      : baseVolatility
 
     // Determine trend based on recent movement and momentum
     const lastPrice = recentPrices[recentPrices.length - 1].price
     const firstPrice = recentPrices[0].price
     const overallTrend = lastPrice > firstPrice ? "bullish" : "bearish"
 
-    // Calculate momentum (acceleration of price changes)
+    // Calculate momentum with timeframe-specific adjustments
     const firstHalfChanges = priceChanges.slice(0, Math.floor(priceChanges.length / 2))
     const secondHalfChanges = priceChanges.slice(Math.floor(priceChanges.length / 2))
 
-    const firstHalfAvg =
-      firstHalfChanges.length > 0
-        ? firstHalfChanges.reduce((sum, change) => sum + change, 0) / firstHalfChanges.length
-        : 0
+    const firstHalfAvg = firstHalfChanges.length > 0
+      ? firstHalfChanges.reduce((sum, change) => sum + change, 0) / firstHalfChanges.length
+      : 0
 
-    const secondHalfAvg =
-      secondHalfChanges.length > 0
-        ? secondHalfChanges.reduce((sum, change) => sum + change, 0) / secondHalfChanges.length
-        : 0
+    const secondHalfAvg = secondHalfChanges.length > 0
+      ? secondHalfChanges.reduce((sum, change) => sum + change, 0) / secondHalfChanges.length
+      : 0
 
     const momentum = secondHalfAvg - firstHalfAvg
 
     // Calculate confidence based on trend consistency and volatility
-    const trendConsistency =
-      priceChanges.filter(
-        (change) => (overallTrend === "bullish" && change > 0) || (overallTrend === "bearish" && change < 0),
-      ).length / priceChanges.length
+    const trendConsistency = priceChanges.filter(
+      (change) => (overallTrend === "bullish" && change > 0) || (overallTrend === "bearish" && change < 0)
+    ).length / priceChanges.length
 
     const confidence = Math.min(95, Math.max(60, Math.floor(trendConsistency * 100 - volatility * 500)))
 
-    // Predict future price based on trend, momentum and volatility
-    const predictedChange = avgChange * 5 + momentum * 10 + (Math.random() - 0.5) * volatility * 2
+    // Predict future price with timeframe-specific adjustments
+    let predictedChange
+    if (timeframe === "30m") {
+      // For 30m timeframe, use a more conservative prediction
+      predictedChange = (avgChange * 0.5) + (momentum * 0.5) + (Math.random() - 0.5) * volatility * 0.5
+      // Limit the maximum change for 30m timeframe
+      predictedChange = Math.max(Math.min(predictedChange, 0.02), -0.02) // Max 2% change in 30m
+    } else {
+      predictedChange = avgChange * 5 + momentum * 10 + (Math.random() - 0.5) * volatility * 2
+    }
+
     const predictedPrice = lastPrice * (1 + predictedChange)
 
-    // Calculate support and resistance levels
+    // Calculate support and resistance levels with timeframe-specific adjustments
     const prices = recentPrices.map((p) => p.price)
     const minPrice = Math.min(...prices)
     const maxPrice = Math.max(...prices)
@@ -2220,10 +2343,17 @@ const Predict = () => {
     const volumeChange = (Math.random() - 0.3) * 20 // -30% to +70% change
     const predictedVolume = selectedItem.total_volume * (1 + volumeChange / 100)
 
-    // Calculate price targets
-    const shortTermTarget = predictedPrice * (1 + Math.random() * 0.05 * (overallTrend === "bullish" ? 1 : -1))
-    const midTermTarget = predictedPrice * (1 + Math.random() * 0.15 * (overallTrend === "bullish" ? 1 : -1))
-    const longTermTarget = predictedPrice * (1 + Math.random() * 0.3 * (overallTrend === "bullish" ? 1 : -1))
+    // Calculate price targets with timeframe-specific adjustments
+    let shortTermTarget, midTermTarget, longTermTarget
+    if (timeframe === "30m") {
+      shortTermTarget = predictedPrice * (1 + Math.random() * 0.01 * (overallTrend === "bullish" ? 1 : -1))
+      midTermTarget = predictedPrice * (1 + Math.random() * 0.02 * (overallTrend === "bullish" ? 1 : -1))
+      longTermTarget = predictedPrice * (1 + Math.random() * 0.03 * (overallTrend === "bullish" ? 1 : -1))
+    } else {
+      shortTermTarget = predictedPrice * (1 + Math.random() * 0.05 * (overallTrend === "bullish" ? 1 : -1))
+      midTermTarget = predictedPrice * (1 + Math.random() * 0.15 * (overallTrend === "bullish" ? 1 : -1))
+      longTermTarget = predictedPrice * (1 + Math.random() * 0.3 * (overallTrend === "bullish" ? 1 : -1))
+    }
 
     // Calculate market sentiment score (0-100)
     const sentimentScore = Math.min(100, Math.max(0, 50 + avgChange * 1000 + momentum * 500))
@@ -2231,8 +2361,14 @@ const Predict = () => {
     // Calculate risk assessment (1-10)
     const riskScore = Math.min(10, Math.max(1, Math.round(volatility * 100)))
 
-    // Calculate probability of price increase
-    const priceIncreaseProb = Math.min(99, Math.max(1, Math.round(50 + momentum * 500 + avgChange * 300)))
+    // Calculate probability of price increase with timeframe-specific adjustments
+    let priceIncreaseProb
+    if (timeframe === "30m") {
+      // For 30m timeframe, use a more conservative probability calculation
+      priceIncreaseProb = Math.min(99, Math.max(1, Math.round(50 + momentum * 200 + avgChange * 100)))
+    } else {
+      priceIncreaseProb = Math.min(99, Math.max(1, Math.round(50 + momentum * 500 + avgChange * 300)))
+    }
 
     // Update the stats probability with the new prediction
     if (coinStats) {
@@ -2342,6 +2478,23 @@ const Predict = () => {
   }
 
   const [tradingRecommendation, setTradingRecommendation] = useState(null)
+
+  // Add new function for fallback prediction
+  const generateFallbackPrediction = (item, tf) => {
+    const currentPrice = item.current_price
+    const volatility = item.price_change_percentage_24h ? Math.abs(item.price_change_percentage_24h) / 100 : 0.02
+    
+    // Generate a more conservative prediction for 30m timeframe
+    const maxChange = tf === "30m" ? 0.02 : 0.05 // 2% for 30m, 5% for others
+    const change = (Math.random() - 0.5) * maxChange
+    const predictedPrice = currentPrice * (1 + change)
+    
+    return {
+      price: predictedPrice,
+      confidence: Math.floor(Math.random() * 20) + 60, // 60-80% confidence
+      trend: change > 0 ? "bullish" : "bearish"
+    }
+  }
 
   if (!selectedItem) {
     return (

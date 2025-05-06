@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 import yfinance as yf
 from typing import Optional
 from datetime import datetime, timedelta
+import time
 
 router = APIRouter()
 
@@ -15,28 +16,46 @@ async def get_historical_data(
         # Add -USD suffix if not present
         if not symbol.endswith('-USD'):
             symbol = f"{symbol}-USD"
-            
-        # Fetch data from yfinance
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period=period, interval=interval)
         
-        if data.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No data found for symbol {symbol}"
-            )
-            
-        # Convert to list format for frontend
-        result = {
-            "dates": data.index.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-            "open": data['Open'].tolist(),
-            "high": data['High'].tolist(),
-            "low": data['Low'].tolist(),
-            "close": data['Close'].tolist(),
-            "volume": data['Volume'].tolist()
-        }
+        # Implement retries with exponential backoff
+        max_retries = 3
+        retry_delay = 2  # Initial delay in seconds
         
-        return result
+        for attempt in range(max_retries):
+            try:
+                # Fetch data from yfinance with progress disabled
+                ticker = yf.Ticker(symbol)
+                data = ticker.history(period=period, interval=interval, progress=False)
+                
+                if not data.empty:
+                    # Convert to list format for frontend
+                    result = {
+                        "dates": data.index.strftime('%Y-%m-%d %H:%M:%S').tolist(),
+                        "open": data['Open'].tolist(),
+                        "high": data['High'].tolist(),
+                        "low": data['Low'].tolist(),
+                        "close": data['Close'].tolist(),
+                        "volume": data['Volume'].tolist()
+                    }
+                    return result
+                    
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"Attempt {attempt + 1} failed for {symbol}: {str(e)}")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to fetch data for {symbol} after {max_retries} attempts: {str(e)}"
+                    )
+        
+        raise HTTPException(
+            status_code=404,
+            detail=f"No data found for symbol {symbol}"
+        )
+        
     except Exception as e:
         raise HTTPException(
             status_code=500,
