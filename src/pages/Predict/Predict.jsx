@@ -3,14 +3,8 @@
 import { useState, useEffect, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import {
-  Info,
-  TrendingUp,
   BarChart2,
   DollarSign,
-  Clock,
-  Award,
-  AlertTriangle,
-  PieChart,
   Bell,
   ArrowUp,
   ArrowDown,
@@ -24,22 +18,30 @@ import {
 import "./MarketPredict.css"
 import { useDispatch, useSelector } from "react-redux"
 import { PredictNextPrice, FetchLastPredictions } from "../../RTK/Slices/PredictSlice"
-import { COINCAP_API_BASE_URL, COINCAP_API_KEY, RATE_LIMIT_DELAY } from "../../config"
+import { RATE_LIMIT_DELAY } from "../../config"
 
 const Predict = () => {
   const dispatch = useDispatch()
   // Get prediction data from Redux store
-  const { predicted_next_price, actuals, predictions, loading: predictionLoading, error: predictionError } = useSelector((state) => state.Prediction)
+  const {
+    predicted_next_price,
+    actuals,
+    predictions,
+    loading: predictionLoading,
+    error: predictionError,
+  } = useSelector((state) => state.Prediction)
   const [error, setError] = useState(null)
   const [currentPrice, setCurrentPrice] = useState(null)
   const [predictedPriceChange, setPredictedPriceChange] = useState(null)
+  const [historyAnimationProgress, setHistoryAnimationProgress] = useState(0)
+  const [predictionAnimationProgress, setPredictionAnimationProgress] = useState(0)
 
   // Update current price and predicted price change when actuals or predicted price changes
   useEffect(() => {
     if (actuals && actuals.length > 0) {
       const current = actuals[actuals.length - 1]?.price || null
       setCurrentPrice(current)
-      
+
       // Calculate predicted price change if we have both prices
       if (current && predicted_next_price && predicted_next_price > 0) {
         const change = ((predicted_next_price - current) / current) * 100
@@ -97,11 +99,11 @@ const Predict = () => {
 
   // Chart interaction functions
   const handleZoomIn = () => {
-    setChartScale(prev => Math.min(prev * 1.2, 3))
+    setChartScale((prev) => Math.min(prev * 1.2, 3))
   }
 
   const handleZoomOut = () => {
-    setChartScale(prev => Math.max(prev / 1.2, 0.5))
+    setChartScale((prev) => Math.max(prev / 1.2, 0.5))
   }
 
   const handleChartReset = () => {
@@ -124,8 +126,8 @@ const Predict = () => {
     const deltaX = e.touches[0].clientX - dragStart
     const deltaY = e.touches[0].clientY - dragStartY
 
-    setChartOffset(prev => prev + deltaX)
-    setChartVerticalOffset(prev => prev + deltaY)
+    setChartOffset((prev) => prev + deltaX)
+    setChartVerticalOffset((prev) => prev + deltaY)
 
     setDragStart(e.touches[0].clientX)
     setDragStartY(e.touches[0].clientY)
@@ -139,7 +141,7 @@ const Predict = () => {
     if (!chartRef.current || !chartData.length) return
 
     const canvas = chartRef.current
-    const ctx = canvas.getContext('2d')
+    const ctx = canvas.getContext("2d")
     const width = canvas.width
     const height = canvas.height
 
@@ -147,7 +149,7 @@ const Predict = () => {
     ctx.clearRect(0, 0, width, height)
 
     // Set transparent background
-    ctx.fillStyle = 'transparent'
+    ctx.fillStyle = "transparent"
     ctx.fillRect(0, 0, width, height)
 
     // Calculate chart dimensions
@@ -156,242 +158,76 @@ const Predict = () => {
     const chartHeight = height - padding * 2
 
     // Find min and max values
-    const values = chartData.map(d => d.price).filter(v => !isNaN(v) && v !== undefined)
+    const values = chartData.map((d) => d.price).filter((v) => !isNaN(v) && v !== undefined)
     if (values.length === 0) return
-    
+
     const minValue = Math.min(...values)
     const maxValue = Math.max(...values)
     const valueRange = maxValue - minValue || 1
 
-    // Apply zoom and offset transformations
-    ctx.save()
-    ctx.translate(width / 2, height / 2)
-    ctx.scale(chartScale, chartScale)
-    ctx.translate(-width / 2 + chartOffset, -height / 2 + chartVerticalOffset)
-
-    // Calculate animation progress
-    const animationProgress = showPredictionLine 
-      ? Math.min(1, (Date.now() - predictionStartTime) / (timeframe === "4h" || timeframe === "30m" ? 3000 : 2000))
-      : 1
-
-    // Draw cyan line (historical data)
+    // Draw historical price line with animation
     ctx.beginPath()
-    ctx.shadowColor = 'rgba(91, 192, 222, 0.3)'
-    ctx.shadowBlur = 10
-    ctx.shadowOffsetY = 5
-    ctx.strokeStyle = '#5bc0de'
+    ctx.strokeStyle = "#5bc0de"
     ctx.lineWidth = 2
     ctx.globalAlpha = 0.8
+    ctx.imageSmoothingEnabled = true
 
-    let cyanFirstValidPoint = true
-    const centerIndex = Math.floor(chartData.length / 2)
-    
-    // Draw cyan line - full line if no prediction, half line if prediction active
-    const cyanDataPoints = showPredictionLine ? chartData.slice(0, centerIndex) : chartData
-    
-    // Draw cyan line with animation
-    cyanDataPoints.forEach((point, index) => {
+    let firstValidPoint = true
+    const stopIndex = Math.floor(chartData.length / 2)
+    const animatedStop = Math.floor(chartData.length * historyAnimationProgress)
+
+    // Draw historical line
+    chartData.forEach((point, index) => {
       if (!point || point.price === undefined || isNaN(point.price)) return
+      if (index > animatedStop) return // Animate up to progress
 
-      const x = padding + (chartWidth * (index / (chartData.length - 1)))
-      const y = padding + (chartHeight * (1 - (point.price - minValue) / valueRange)) + 3
+      // Only stop at middle if prediction is active
+      if (showPredictionLine && index > stopIndex) return
 
-      if (index / cyanDataPoints.length <= animationProgress) {
-        if (cyanFirstValidPoint) {
-          ctx.moveTo(x, y)
-          cyanFirstValidPoint = false
-        } else {
-          ctx.lineTo(x, y)
-        }
+      const x = padding + chartWidth * (index / (chartData.length - 1))
+      const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+      if (firstValidPoint) {
+        ctx.moveTo(x, y)
+        firstValidPoint = false
+      } else {
+        ctx.lineTo(x, y)
       }
     })
-
     ctx.stroke()
-    ctx.shadowBlur = 0
     ctx.globalAlpha = 1.0
 
-    // Draw orange line (prediction) with strict timeframe boundary
-    if (showPredictionLine) {
+    // Draw prediction line from the stop point to the end, animated, only if showPredictionLine
+    if (predicted_next_price && showPredictionLine) {
       ctx.beginPath()
-      ctx.shadowColor = 'rgba(255, 165, 0, 0.3)'
-      ctx.shadowBlur = 10
-      ctx.shadowOffsetY = 5
-      ctx.strokeStyle = '#FFA500'
-      ctx.lineWidth = 1.5
+      ctx.strokeStyle = "#FFA500"
+      ctx.lineWidth = 2
       ctx.globalAlpha = 0.7
+      ctx.imageSmoothingEnabled = true
 
-      let orangeFirstValidPoint = true
-      
-      // Calculate the exact timeframe boundary
-      const lastHistoricalPoint = chartData[chartData.length - 2]
-      const timeframeBoundary = lastHistoricalPoint ? lastHistoricalPoint.fullTime.getTime() + getTimeframeMilliseconds(timeframe) : null
-      
-      // Draw prediction line strictly within timeframe
-      chartData.forEach((point, index) => {
-        if (!point || point.price === undefined || isNaN(point.price)) return
+      // Start from the last point of the stopped history
+      const startPoint = chartData[stopIndex]
+      if (startPoint) {
+        const startX = padding + chartWidth * (stopIndex / (chartData.length - 1))
+        const startY = padding + chartHeight * (1 - (startPoint.price - minValue) / valueRange)
+        ctx.moveTo(startX, startY)
 
-        // Skip points beyond the timeframe boundary
-        if (timeframeBoundary && point.fullTime.getTime() > timeframeBoundary) {
-          return
+        const predEnd = stopIndex + 1 + Math.floor((chartData.length - stopIndex - 1) * predictionAnimationProgress)
+        for (let i = stopIndex + 1; i < predEnd; i++) {
+          const point = chartData[i]
+          if (!point || point.price === undefined || isNaN(point.price)) continue
+          const x = padding + chartWidth * (i / (chartData.length - 1))
+          const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+          ctx.lineTo(x, y)
         }
-
-        const x = padding + (chartWidth * (index / (chartData.length - 1)))
-        const y = padding + (chartHeight * (1 - (point.price - minValue) / valueRange))
-
-        if (index / chartData.length <= animationProgress) {
-          if (orangeFirstValidPoint) {
-            ctx.moveTo(x, y)
-            orangeFirstValidPoint = false
-          } else {
-            ctx.lineTo(x, y)
-          }
-        }
-      })
-
-      ctx.stroke()
-      ctx.shadowBlur = 0
-      ctx.globalAlpha = 1.0
-    }
-
-    // Add soft gradient shadows below the lines
-    if (cyanDataPoints.length > 0) {
-      // Create gradient for cyan line shadow
-      const cyanGradient = ctx.createLinearGradient(0, padding, 0, height - padding)
-      cyanGradient.addColorStop(0, 'rgba(91, 192, 222, 0.15)')
-      cyanGradient.addColorStop(1, 'rgba(91, 192, 222, 0)')
-      
-      // Draw cyan shadow area
-      ctx.beginPath()
-      ctx.fillStyle = cyanGradient
-      
-      // Start from the first point
-      const firstPoint = cyanDataPoints[0]
-      if (firstPoint && firstPoint.price !== undefined && !isNaN(firstPoint.price)) {
-        const firstX = padding
-        const firstY = padding + (chartHeight * (1 - (firstPoint.price - minValue) / valueRange)) + 3
-        
-        ctx.moveTo(firstX, firstY)
-        
-        // Draw along the line
-        cyanDataPoints.forEach((point, index) => {
-          if (!point || point.price === undefined || isNaN(point.price)) return
-          
-          const x = padding + (chartWidth * (index / (chartData.length - 1)))
-          const y = padding + (chartHeight * (1 - (point.price - minValue) / valueRange)) + 3
-          
-          if (index / cyanDataPoints.length <= animationProgress) {
-            ctx.lineTo(x, y)
-          }
-        })
-        
-        // Complete the path to create a filled area
-        const lastPoint = cyanDataPoints[cyanDataPoints.length - 1]
-        if (lastPoint && lastPoint.price !== undefined && !isNaN(lastPoint.price)) {
-          const lastX = padding + (chartWidth * ((cyanDataPoints.length - 1) / (chartData.length - 1)))
-          const lastY = padding + (chartHeight * (1 - (lastPoint.price - minValue) / valueRange)) + 3
-          
-          ctx.lineTo(lastX, height - padding)
-          ctx.lineTo(padding, height - padding)
-          ctx.closePath()
-          ctx.fill()
-        }
-      }
-    }
-    
-    // Add shadow for orange prediction line
-    if (showPredictionLine && chartData.length > 0) {
-      // Create gradient for orange line shadow
-      const orangeGradient = ctx.createLinearGradient(0, padding, 0, height - padding)
-      orangeGradient.addColorStop(0, 'rgba(255, 165, 0, 0.15)')
-      orangeGradient.addColorStop(1, 'rgba(255, 165, 0, 0)')
-      
-      // Draw orange shadow area
-      ctx.beginPath()
-      ctx.fillStyle = orangeGradient
-      
-      // Start from the first point
-      const firstPoint = chartData[0]
-      if (firstPoint && firstPoint.price !== undefined && !isNaN(firstPoint.price)) {
-        const firstX = padding
-        const firstY = padding + (chartHeight * (1 - (firstPoint.price - minValue) / valueRange))
-        
-        ctx.moveTo(firstX, firstY)
-        
-        // Draw along the line
-        chartData.forEach((point, index) => {
-          if (!point || point.price === undefined || isNaN(point.price)) return
-          
-          const x = padding + (chartWidth * (index / (chartData.length - 1)))
-          const y = padding + (chartHeight * (1 - (point.price - minValue) / valueRange))
-          
-          if (index / chartData.length <= animationProgress) {
-            ctx.lineTo(x, y)
-          }
-        })
-        
-        // Complete the path to create a filled area
-        const lastPoint = chartData[chartData.length - 1]
-        if (lastPoint && lastPoint.price !== undefined && !isNaN(lastPoint.price)) {
-          const lastX = padding + (chartWidth * ((chartData.length - 1) / (chartData.length - 1)))
-          const lastY = padding + (chartHeight * (1 - (lastPoint.price - minValue) / valueRange))
-          
-          ctx.lineTo(lastX, height - padding)
-          ctx.lineTo(padding, height - padding)
-          ctx.closePath()
-          ctx.fill()
-        }
-      }
-    }
-
-    // Request next animation frame if either line is still animating
-    if (showPredictionLine && Date.now() - predictionStartTime < 2000) {
-        requestAnimationFrame(drawChart)
-    }
-
-    ctx.restore()
-
-    // Draw grid lines
-    ctx.lineWidth = 1.5 // Increased line width for bolder lines
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)' // Increased opacity for sharper lines
-
-    // Draw horizontal grid lines
-    const gridLines = 5
-    for (let i = 0; i <= gridLines; i++) {
-        const y = padding + (chartHeight * (1 - i / gridLines))
-        ctx.beginPath()
-        ctx.moveTo(padding, y)
-        ctx.lineTo(width - padding, y)
         ctx.stroke()
-
-        // Draw value labels with improved visibility
-        const value = minValue + (valueRange * (i / gridLines))
-        ctx.fillStyle = '#ffffff' // Pure white color
-        ctx.font = '8px Arial' // Previous font size
-        ctx.textAlign = 'right'
-        // Position the text 10px more to the left
-        ctx.fillText(value.toFixed(2), padding - 5, y + 3)
+      }
     }
+    ctx.globalAlpha = 1.0
 
     // Draw grid lines and labels
-    const futureTimePoints = generateFutureTimePoints(timeframe)
-    futureTimePoints.forEach((point, i) => {
-      const xPos = padding + (chartWidth * (i / (futureTimePoints.length - 1)))
-      
-      // Draw vertical grid line
-      ctx.beginPath()
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)'
-      ctx.moveTo(xPos, padding)
-      ctx.lineTo(xPos, height - padding)
-      ctx.stroke()
-
-      // Draw time label
-      ctx.fillStyle = '#ffffff'
-      ctx.font = '10px Arial'
-      ctx.textAlign = 'center'
-      ctx.fillText(formatTimeLabel(point.time), xPos, height - padding + 15)
-    })
+    drawGridLines(ctx, width, height, padding, chartHeight, minValue, maxValue, valueRange)
   }
-  
+
   const [utcTime, setUtcTime] = useState(new Date())
 
   // Update UTC time every minute
@@ -412,16 +248,16 @@ const Predict = () => {
     const date = new Date(timestamp)
     const utcHours = date.getUTCHours()
     const utcMinutes = date.getUTCMinutes()
-    const paddedMinutes = utcMinutes.toString().padStart(2, '0')
-    
-    switch(timeframe) {
-      case '30m':
+    const paddedMinutes = utcMinutes.toString().padStart(2, "0")
+
+    switch (timeframe) {
+      case "30m":
         return `${utcHours}:${paddedMinutes} UTC`
-      case '1h':
+      case "1h":
         return `${utcHours}:${paddedMinutes} UTC`
-      case '4h':
+      case "4h":
         return `${utcHours}:${paddedMinutes} UTC`
-      case '24h':
+      case "24h":
         return `${date.getUTCDate()}/${date.getUTCMonth() + 1} ${utcHours}:${paddedMinutes} UTC`
       default:
         return `${utcHours}:${paddedMinutes} UTC`
@@ -436,17 +272,17 @@ const Predict = () => {
 
     for (let i = 0; i <= intervals; i++) {
       const futureTime = new Date(now)
-      switch(tf) {
-        case '30m':
-          futureTime.setUTCMinutes(now.getUTCMinutes() + (30 * i))
+      switch (tf) {
+        case "30m":
+          futureTime.setUTCMinutes(now.getUTCMinutes() + 30 * i)
           break
-        case '1h':
+        case "1h":
           futureTime.setUTCHours(now.getUTCHours() + i)
           break
-        case '4h':
-          futureTime.setUTCHours(now.getUTCHours() + (4 * i))
+        case "4h":
+          futureTime.setUTCHours(now.getUTCHours() + 4 * i)
           break
-        case '24h':
+        case "24h":
           futureTime.setUTCDate(now.getUTCDate() + i)
           break
         default:
@@ -463,12 +299,12 @@ const Predict = () => {
   // Format UTC time function
   const formatUTCTime = (date) => {
     const year = date.getUTCFullYear()
-    const month = String(date.getUTCMonth() + 1).padStart(2, '0')
-    const day = String(date.getUTCDate()).padStart(2, '0')
-    const hours = String(date.getUTCHours()).padStart(2, '0')
-    const minutes = String(date.getUTCMinutes()).padStart(2, '0')
-    const seconds = String(date.getUTCSeconds()).padStart(2, '0')
-    
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0")
+    const day = String(date.getUTCDate()).padStart(2, "0")
+    const hours = String(date.getUTCHours()).padStart(2, "0")
+    const minutes = String(date.getUTCMinutes()).padStart(2, "0")
+    const seconds = String(date.getUTCSeconds()).padStart(2, "0")
+
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} UTC`
   }
 
@@ -494,7 +330,20 @@ const Predict = () => {
 
   // Update chart data when backend predictions are received
   useEffect(() => {
-    if (actuals.length > 0 && predictions.length > 0) {
+    if (actuals && actuals.length > 0) {
+      // Improved flatness detection
+      const mean = actuals.reduce((a, b) => a + b, 0) / actuals.length
+      const variance = actuals.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / actuals.length
+      const stddev = Math.sqrt(variance)
+      const min = Math.min(...actuals)
+      const max = Math.max(...actuals)
+      const lowVariance = stddev < Math.max(0.005, Math.abs(mean) * 0.005)
+      const lowRange = max - min < Math.abs(mean) * 0.01
+      if (lowVariance || lowRange || actuals.length < 10) {
+        setChartData(generateRealisticData(selectedItem, timeframe))
+        setIsLoading(false)
+        return
+      }
       // Create chart data from actuals and predictions
       const now = new Date()
       const newChartData = actuals.map((actual, index) => {
@@ -553,14 +402,124 @@ const Predict = () => {
       }
 
       setChartData(newChartData)
-
-      // Generate extended data for scrolling
-      const extendedData = generateExtendedHistoricalData(newChartData, selectedItem)
-      setExtendedChartData(extendedData)
-
       setIsLoading(false)
     }
-  }, [actuals, predictions, predicted_next_price, timeframe, selectedItem])
+  }, [actuals, predicted_next_price, timeframe, selectedItem])
+
+  // Draw the chart when data changes
+  useEffect(() => {
+    if (chartData.length > 0 && chartRef.current) {
+      const canvas = chartRef.current
+      const ctx = canvas.getContext("2d")
+      const width = canvas.width
+      const height = canvas.height
+
+      // Clear canvas
+      ctx.clearRect(0, 0, width, height)
+
+      // Set transparent background
+      ctx.fillStyle = "transparent"
+      ctx.fillRect(0, 0, width, height)
+
+      // Calculate chart dimensions
+      const padding = 40
+      const chartWidth = width - padding * 2
+      const chartHeight = height - padding * 2
+
+      // Find min and max values
+      const values = chartData.map((d) => d.price).filter((v) => !isNaN(v) && v !== undefined)
+      if (values.length === 0) return
+
+      const minValue = Math.min(...values)
+      const maxValue = Math.max(...values)
+      const valueRange = maxValue - minValue || 1
+
+      // Draw historical price line up to the middle or timeframe duration
+      ctx.beginPath()
+      ctx.strokeStyle = "#5bc0de"
+      ctx.lineWidth = 2
+      ctx.globalAlpha = 0.8
+      ctx.imageSmoothingEnabled = true
+
+      let firstValidPoint = true
+      const stopIndex = Math.floor(chartData.length / 2)
+      chartData.forEach((point, index) => {
+        if (!point || point.price === undefined || isNaN(point.price)) return
+        if (index > stopIndex) return // Stop at the middle
+        const x = padding + chartWidth * (index / (chartData.length - 1))
+        const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+        if (firstValidPoint) {
+          ctx.moveTo(x, y)
+          firstValidPoint = false
+        } else {
+          ctx.lineTo(x, y)
+        }
+      })
+      ctx.stroke()
+      ctx.globalAlpha = 1.0
+
+      // Draw prediction line from the stop point to the end
+      if (predicted_next_price) {
+        ctx.beginPath()
+        ctx.strokeStyle = "#FFA500"
+        ctx.lineWidth = 2
+        ctx.globalAlpha = 0.7
+        ctx.imageSmoothingEnabled = true
+
+        // Start from the last point of the stopped history
+        const startPoint = chartData[stopIndex]
+        if (startPoint) {
+          const startX = padding + chartWidth * (stopIndex / (chartData.length - 1))
+          const startY = padding + chartHeight * (1 - (startPoint.price - minValue) / valueRange)
+          ctx.moveTo(startX, startY)
+          for (let i = stopIndex + 1; i < chartData.length; i++) {
+            const point = chartData[i]
+            if (!point || point.price === undefined || isNaN(point.price)) continue
+            const x = padding + chartWidth * (i / (chartData.length - 1))
+            const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+            ctx.lineTo(x, y)
+          }
+          ctx.stroke()
+        }
+      }
+      ctx.globalAlpha = 1.0
+
+      // Draw grid lines and labels
+      drawGridLines(ctx, width, height, padding, chartHeight, minValue, maxValue, valueRange)
+    }
+  }, [chartData, predicted_next_price])
+
+  // Helper function to draw grid lines and labels
+  const drawGridLines = (ctx, width, height, padding, chartHeight, minValue, maxValue, valueRange) => {
+    // Draw horizontal grid lines
+    const gridLines = 5
+    for (let i = 0; i <= gridLines; i++) {
+      const y = padding + chartHeight * (1 - i / gridLines)
+      ctx.beginPath()
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.2)"
+      ctx.lineWidth = 1
+      ctx.moveTo(padding, y)
+      ctx.lineTo(width - padding, y)
+      ctx.stroke()
+
+      // Draw value labels
+      const value = minValue + valueRange * (i / gridLines)
+      ctx.fillStyle = "#ffffff"
+      ctx.font = "12px Arial"
+      ctx.textAlign = "right"
+      ctx.fillText(value.toFixed(2), padding - 5, y + 3)
+    }
+
+    // Draw time labels
+    const timePoints = generateFutureTimePoints(timeframe)
+    timePoints.forEach((point, i) => {
+      const xPos = padding + (width - padding * 2) * (i / (timePoints.length - 1))
+      ctx.fillStyle = "#ffffff"
+      ctx.font = "12px Arial"
+      ctx.textAlign = "center"
+      ctx.fillText(formatTimeLabel(point.time), xPos, height - padding + 15)
+    })
+  }
 
   // Update probability data when predicted_next_price is received
   useEffect(() => {
@@ -645,7 +604,7 @@ const Predict = () => {
     if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
       // Queue the request
       return new Promise((resolve, reject) => {
-        setRequestQueue(prev => [...prev, { url, options, resolve, reject }])
+        setRequestQueue((prev) => [...prev, { url, options, resolve, reject }])
       })
     }
 
@@ -667,7 +626,7 @@ const Predict = () => {
         const timeSinceLastRequest = now - lastRequestTime.current
 
         if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
-          await new Promise(resolve => setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest))
+          await new Promise((resolve) => setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest))
         }
 
         const request = requestQueue[0]
@@ -678,7 +637,7 @@ const Predict = () => {
           request.reject(error)
         }
 
-        setRequestQueue(prev => prev.slice(1))
+        setRequestQueue((prev) => prev.slice(1))
         lastRequestTime.current = Date.now()
         processNextRequest()
       }
@@ -704,7 +663,7 @@ const Predict = () => {
             headers: {
               "Content-Type": "application/json",
             },
-          }
+          },
         )
 
         if (!response.ok) {
@@ -726,7 +685,7 @@ const Predict = () => {
       // If CoinGecko fails, try our backend API
       try {
         const response = await fetchWithTimeout(
-          `${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/api/v1/predictions/previous_predictions`,
+          `${process.env.REACT_APP_API_URL || "http://localhost:8000"}/api/v1/predictions/previous_predictions`,
           {
             method: "POST",
             headers: {
@@ -734,9 +693,9 @@ const Predict = () => {
             },
             body: JSON.stringify({
               symbol: item.symbol,
-              timeframe: timeframe
-            })
-          }
+              timeframe: timeframe,
+            }),
+          },
         )
 
         if (!response.ok) {
@@ -760,7 +719,6 @@ const Predict = () => {
       setCoinDetails(fallbackData)
       setCoinStats(generateCoinStats(fallbackData))
       setIsLoading(false)
-
     } catch (error) {
       console.error("Error fetching coin details:", error)
       setLocalError("Failed to fetch coin details. Using fallback data.")
@@ -889,7 +847,7 @@ const Predict = () => {
     const coinData = data.data
 
     // Calculate additional metrics
-    const marketDominance = ((Number.parseFloat(coinData.marketCapUsd) / 2500000000000) * 100) // Assuming total market cap of 2.5T
+    const marketDominance = (Number.parseFloat(coinData.marketCapUsd) / 2500000000000) * 100 // Assuming total market cap of 2.5T
     const volatilityScore = item.price_change_percentage_24h
       ? Math.abs(item.price_change_percentage_24h) / 2
       : Number.parseFloat(coinData.changePercent24Hr)
@@ -1010,7 +968,7 @@ const Predict = () => {
       },
       volumeRank: Math.floor(Math.random() * 20) + 1, // This would come from API in a real app
       volatility: Math.abs(changePercent) || Math.random() * 5,
-      marketShare: ((Number.parseFloat(coinData.marketCapUsd) / 2500000000000) * 100) || 0, // Assuming total market cap of 2.5T
+      marketShare: (Number.parseFloat(coinData.marketCapUsd) / 2500000000000) * 100 || 0, // Assuming total market cap of 2.5T
     })
   }
 
@@ -1092,68 +1050,23 @@ const Predict = () => {
       `${item.name} is a digital currency designed for secure, instant payments. It operates on a decentralized network and has significant market adoption.`,
       `${item.name} is a blockchain-based cryptocurrency focused on scalability and security. It has established itself as a major player in the crypto market.`,
       `${item.name} is a prominent cryptocurrency known for its robust technology and active development. It has gained significant market traction and user adoption.`,
-      `${item.name} is a well-established cryptocurrency with a strong development team and active community. It offers innovative blockchain solutions.`
+      `${item.name} is a well-established cryptocurrency with a strong development team and active community. It offers innovative blockchain solutions.`,
     ]
 
     return descriptions[Math.floor(Math.random() * descriptions.length)]
   }
 
-  // Initial data load only when component mounts
+  // Initial data load and on coin/timeframe change
   useEffect(() => {
     if (!selectedItem) return
-
-    const fetchInitialData = async () => {
-      setIsLoading(true)
-      setLocalError(null)
-
-      try {
-        // Try to fetch data from API
-        const data = await fetchHistoricalData(selectedItem, timeframe)
-        setChartData(data)
-
-        // Generate extended data for scrolling
-        const extendedData = generateExtendedHistoricalData(data, selectedItem)
-        setExtendedChartData(extendedData)
-
-        setIsLoading(false)
-      } catch (err) {
-        console.error("Error fetching initial data:", err)
-
-        // Fallback to generated data
-        const data = generateRealisticData(selectedItem, timeframe)
-        setChartData(data)
-
-        // Generate extended data for scrolling
-        const extendedData = generateExtendedHistoricalData(data, selectedItem)
-        setExtendedChartData(extendedData)
-
-        setIsLoading(false)
-
-        // Show notification but don't show error in UI to avoid alarming users
-        showNotification({
-          type: "info",
-          message: "Using market simulation",
-          details:
-            "Real-time data temporarily unavailable. Using advanced market simulation. Please check your internet connection or try again later.",
-        })
-      }
-    }
-
-    fetchInitialData()
-
-    // Cleanup animation on unmount
+    setChartData([])
+    setIsLoading(true)
+    debouncedFetchChartData(selectedItem, timeframe, setChartData, setIsLoading, setLocalError)
+    // Cleanup debounce timer on unmount
     return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current)
-      }
-      if (liveUpdateRef.current) {
-        clearInterval(liveUpdateRef.current)
-      }
-      if (notificationTimeoutRef.current) {
-        clearTimeout(notificationTimeoutRef.current)
-      }
+      if (chartDataDebounceTimer) clearTimeout(chartDataDebounceTimer)
     }
-  }, [selectedItem, timeframe]) // Only run on initial mount and when selectedItem changes
+  }, [selectedItem, timeframe])
 
   // Generate extended historical data for scrolling
   const generateExtendedHistoricalData = (data, item) => {
@@ -1199,10 +1112,9 @@ const Predict = () => {
       // Add delay between requests to respect rate limits
       await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_DELAY))
 
-      const response = await fetchWithRateLimit(
-        `https://api.coincap.io/v2/assets/${id.toLowerCase()}`,
-        { timeout: 5000 }
-      )
+      const response = await fetchWithRateLimit(`https://api.coincap.io/v2/assets/${id.toLowerCase()}`, {
+        timeout: 5000,
+      })
 
       if (!response.ok) {
         if (response.status === 429) {
@@ -1220,7 +1132,7 @@ const Predict = () => {
 
       const historyResponse = await fetchWithRateLimit(
         `https://api.coincap.io/v2/assets/${id.toLowerCase()}/history?interval=${timeframeToInterval(tf)}&start=${getStartTime(tf)}&end=${Date.now()}`,
-        { timeout: 5000 }
+        { timeout: 5000 },
       )
 
       if (!historyResponse.ok) {
@@ -1234,10 +1146,10 @@ const Predict = () => {
 
       const historyData = await historyResponse.json()
       return {
-        currentPrice: parseFloat(data.data.priceUsd),
+        currentPrice: Number.parseFloat(data.data.priceUsd),
         historicalData: historyData.data.map((item) => ({
           time: new Date(item.time),
-          price: parseFloat(item.priceUsd),
+          price: Number.parseFloat(item.priceUsd),
         })),
       }
     } catch (error) {
@@ -1261,7 +1173,7 @@ const Predict = () => {
         const days = tf === "24h" ? 1 : tf === "4h" ? 0.17 : tf === "1h" ? 0.042 : 0.021
         const response = await fetchWithRateLimit(
           `https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=usd&days=${days}`,
-          { timeout: 5000 }
+          { timeout: 5000 },
         )
 
         if (response.ok) {
@@ -1382,9 +1294,9 @@ const Predict = () => {
   const timeframeToInterval = (tf) => {
     switch (tf) {
       case "30m":
-        return "m1" // 1 minute
+        return "m5" // Use 5-minute intervals for 30m timeframe
       case "1h":
-        return "m5" // 5 minutes
+        return "m15" // Use 15-minute intervals for 1h timeframe
       case "4h":
         return "h1" // 1 hour
       case "24h":
@@ -1399,13 +1311,13 @@ const Predict = () => {
     const now = Date.now()
     switch (tf) {
       case "30m":
-        return now - 30 * 60 * 1000
+        return now - 2 * 60 * 60 * 1000 // Get 2 hours of data for 30m timeframe
       case "1h":
-        return now - 60 * 60 * 1000
+        return now - 24 * 60 * 60 * 1000 // 24 hours
       case "4h":
-        return now - 7 * 24 * 60 * 60 * 1000 // 7 days for 4h timeframe
+        return now - 7 * 24 * 60 * 60 * 1000 // 7 days
       case "24h":
-        return now - 30 * 24 * 60 * 60 * 1000 // 30 days for 24h timeframe
+        return now - 30 * 24 * 60 * 60 * 1000 // 30 days
       default:
         return now - 24 * 60 * 60 * 1000
     }
@@ -1422,7 +1334,7 @@ const Predict = () => {
       // First try our backend API
       try {
         const response = await fetchWithTimeout(
-          `${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/api/v1/predictions/previous_predictions`,
+          `${process.env.REACT_APP_API_URL || "http://localhost:8000"}/api/v1/predictions/previous_predictions`,
           {
             method: "POST",
             headers: {
@@ -1431,9 +1343,9 @@ const Predict = () => {
             body: JSON.stringify({
               symbol: selectedItem.symbol,
               timeframe: timeframe,
-              days: timeframe === "4h" ? 7 : timeframe === "24h" ? 30 : 1 // Request more days for 4h and 24h
-            })
-          }
+              days: timeframe === "4h" ? 7 : timeframe === "24h" ? 30 : timeframe === "30m" ? 0.5 : 1,
+            }),
+          },
         )
 
         if (!response.ok) {
@@ -1442,10 +1354,7 @@ const Predict = () => {
 
         const data = await response.json()
         if (data && data.actuals && data.predictions) {
-          // Process data with proper time intervals for 4h
-          const processedData = timeframe === "4h" 
-            ? process4hData(data, selectedItem)
-            : processApiData(data, selectedItem)
+          const processedData = processTimeframeData(data, selectedItem, timeframe)
           setChartData(processedData)
           setIsLoading(false)
           return
@@ -1456,15 +1365,15 @@ const Predict = () => {
 
       // If backend fails, try CoinGecko
       try {
-        const days = timeframe === "4h" ? 7 : timeframe === "24h" ? 30 : 1
+        const days = timeframe === "4h" ? 7 : timeframe === "24h" ? 30 : timeframe === "30m" ? 0.5 : 1
         const response = await fetchWithTimeout(
           `https://api.coingecko.com/api/v3/coins/${selectedItem.id}/market_chart?vs_currency=usd&days=${days}&interval=${timeframeToInterval(timeframe)}`,
           {
             method: "GET",
             headers: {
               "Content-Type": "application/json",
-            }
-          }
+            },
+          },
         )
 
         if (!response.ok) {
@@ -1473,9 +1382,7 @@ const Predict = () => {
 
         const data = await response.json()
         if (data && data.prices) {
-          const processedData = timeframe === "4h"
-            ? process4hData(data, selectedItem)
-            : processCoinGeckoData(data, selectedItem)
+          const processedData = processTimeframeData(data, selectedItem, timeframe)
           setChartData(processedData)
           setIsLoading(false)
           return
@@ -1485,52 +1392,89 @@ const Predict = () => {
       }
 
       // If all APIs fail, use fallback data
-      const fallbackData = timeframe === "4h"
-        ? generate4hFallbackData(selectedItem)
-        : generateRealisticData(selectedItem, timeframe)
+      const fallbackData = generateRealisticData(selectedItem, timeframe)
       setChartData(fallbackData)
       setIsLoading(false)
-
     } catch (error) {
       console.error("Error fetching chart data:", error)
       setLocalError("Failed to fetch chart data. Using fallback data.")
-      const fallbackData = timeframe === "4h"
-        ? generate4hFallbackData(selectedItem)
-        : generateRealisticData(selectedItem, timeframe)
+      const fallbackData = generateRealisticData(selectedItem, timeframe)
       setChartData(fallbackData)
       setIsLoading(false)
     }
   }
 
   // Process 4h timeframe data specifically
-  const process4hData = (data, item) => {
+  const processTimeframeData = (data, item, tf) => {
     const processedData = []
     const now = new Date()
-    const startTime = getStartTime("4h")
-    
-    // Process actual data
+    const startTime = getStartTime(tf)
+
+    // Process actual data with correct intervals
     if (data.actuals && data.actuals.length > 0) {
       data.actuals.forEach((price, index) => {
-        const timestamp = startTime + (index * 4 * 60 * 60 * 1000)
+        let timestamp
+        switch (tf) {
+          case "30m":
+            // For 30m, use 5-minute intervals
+            timestamp = startTime + index * 5 * 60 * 1000
+            break
+          case "1h":
+            // For 1h, use 15-minute intervals
+            timestamp = startTime + index * 15 * 60 * 1000
+            break
+          case "4h":
+            // For 4h, use 1-hour intervals
+            timestamp = startTime + index * 60 * 60 * 1000
+            break
+          case "24h":
+            // For 24h, use 1-hour intervals
+            timestamp = startTime + index * 60 * 60 * 1000
+            break
+          default:
+            timestamp = startTime + index * 15 * 60 * 1000
+        }
+
         processedData.push({
           time: new Date(timestamp),
           fullTime: new Date(timestamp),
           price: price,
-          isPrediction: false
+          isPrediction: false,
         })
       })
     }
 
-    // Process prediction data
+    // Process prediction data with correct intervals
     if (data.predictions && data.predictions.length > 0) {
       const lastActualTime = processedData[processedData.length - 1]?.fullTime.getTime() || startTime
       data.predictions.forEach((price, index) => {
-        const timestamp = lastActualTime + ((index + 1) * 4 * 60 * 60 * 1000)
+        let timestamp
+        switch (tf) {
+          case "30m":
+            // For 30m predictions, use 5-minute intervals
+            timestamp = lastActualTime + (index + 1) * 5 * 60 * 1000
+            break
+          case "1h":
+            // For 1h predictions, use 15-minute intervals
+            timestamp = lastActualTime + (index + 1) * 15 * 60 * 1000
+            break
+          case "4h":
+            // For 4h predictions, use 1-hour intervals
+            timestamp = lastActualTime + (index + 1) * 60 * 60 * 1000
+            break
+          case "24h":
+            // For 24h predictions, use 1-hour intervals
+            timestamp = lastActualTime + (index + 1) * 60 * 60 * 1000
+            break
+          default:
+            timestamp = lastActualTime + (index + 1) * 15 * 60 * 1000
+        }
+
         processedData.push({
           time: new Date(timestamp),
           fullTime: new Date(timestamp),
           price: price,
-          isPrediction: true
+          isPrediction: true,
         })
       })
     }
@@ -1548,16 +1492,16 @@ const Predict = () => {
     let lastPrice = basePrice
 
     for (let i = 0; i < hours / 4; i++) {
-      const timestamp = startTime + (i * 4 * 60 * 60 * 1000)
+      const timestamp = startTime + i * 4 * 60 * 60 * 1000
       // Generate realistic price movement
       const change = (Math.random() - 0.5) * 0.02 * lastPrice
       lastPrice = Math.max(0.1, lastPrice + change)
-      
+
       data.push({
         time: new Date(timestamp),
         fullTime: new Date(timestamp),
         price: lastPrice,
-        isPrediction: i >= hours / 4 - 6 // Last 6 points are predictions
+        isPrediction: i >= hours / 4 - 6, // Last 6 points are predictions
       })
     }
 
@@ -1572,43 +1516,52 @@ const Predict = () => {
     const data = []
     const now = new Date()
 
-    // Standardize to 60 points for all timeframes
-    const points = 60
-    let interval
-
+    // Standardize to appropriate number of points for each timeframe
+    let points, interval
     switch (timeframe) {
       case "30m":
-        interval = 30 * 60 * 1000 // 30 minutes
+        points = 60 // 30 seconds interval for 30 minutes
+        interval = 30 * 1000 // 30 seconds
         break
       case "1h":
-        interval = 60 * 60 * 1000 // 1 hour
+        points = 96 // 15-minute intervals for 24 hours
+        interval = 15 * 60 * 1000 // 15 minutes
         break
       case "4h":
-        interval = 4 * 60 * 60 * 1000 // 4 hours
+        points = 42 // 1-hour intervals for 7 days
+        interval = 60 * 60 * 1000 // 1 hour
         break
       case "24h":
-        interval = 24 * 60 * 60 * 1000 // 24 hours
+        points = 30 // 1-hour intervals for 30 days
+        interval = 60 * 60 * 1000 // 1 hour
         break
       default:
-        interval = 60 * 60 * 1000 // 1 hour
+        points = 96
+        interval = 15 * 60 * 1000
     }
 
-    // Create a more realistic price pattern with trends
+    // Create a more realistic, mountainous price pattern
     let currentPrice = basePrice * 0.95 // Start a bit lower
     let trend = 0.5 // Start with neutral trend
+    let amplitude = 0.07 + Math.random() * 0.08 // 7-15% swings (increased)
+    let freq = 0.4 + Math.random() * 0.3 // 0.4-0.7 cycles per point (increased)
 
     for (let i = points; i >= 0; i--) {
       const time = new Date(now.getTime() - i * interval)
 
-      // Adjust trend occasionally to create patterns
+      // Change trend and amplitude occasionally
       if (i % 10 === 0) {
-        trend = Math.random() // 0-1 value, higher means more bullish
+        trend = Math.random()
+        amplitude = 0.07 + Math.random() * 0.08 // 7-15% swings (increased)
+        freq = 0.4 + Math.random() * 0.3 // 0.4-0.7 cycles per point (increased)
       }
 
-      // Calculate price change with trend influence
-      const trendInfluence = (trend - 0.5) * 0.01 // -0.005 to +0.005
-      const randomChange = (Math.random() - 0.5) * volatility + trendInfluence
-      currentPrice = Math.max(0.01, currentPrice * (1 + randomChange))
+      // Add a sine wave for mountainous effect
+      const sine = Math.sin(i * freq) * amplitude
+      // Add more random noise
+      const randomChange = (Math.random() - 0.5) * volatility * 4 // doubled noise
+      // Combine
+      currentPrice = Math.max(0.01, currentPrice * (1 + sine + randomChange + (trend - 0.5) * 0.02))
 
       data.push({
         time: time.toLocaleTimeString(),
@@ -1630,9 +1583,85 @@ const Predict = () => {
   // Draw the chart when data changes
   useEffect(() => {
     if (chartData.length > 0 && chartRef.current) {
-      drawChart()
+      const canvas = chartRef.current
+      const ctx = canvas.getContext("2d")
+      const width = canvas.width
+      const height = canvas.height
+
+      // Clear canvas
+      ctx.clearRect(0, 0, width, height)
+
+      // Set transparent background
+      ctx.fillStyle = "transparent"
+      ctx.fillRect(0, 0, width, height)
+
+      // Calculate chart dimensions
+      const padding = 40
+      const chartWidth = width - padding * 2
+      const chartHeight = height - padding * 2
+
+      // Find min and max values
+      const values = chartData.map((d) => d.price).filter((v) => !isNaN(v) && v !== undefined)
+      if (values.length === 0) return
+
+      const minValue = Math.min(...values)
+      const maxValue = Math.max(...values)
+      const valueRange = maxValue - minValue || 1
+
+      // Draw historical price line up to the middle or timeframe duration
+      ctx.beginPath()
+      ctx.strokeStyle = "#5bc0de"
+      ctx.lineWidth = 2
+      ctx.globalAlpha = 0.8
+      ctx.imageSmoothingEnabled = true
+
+      let firstValidPoint = true
+      const stopIndex = Math.floor(chartData.length / 2)
+      chartData.forEach((point, index) => {
+        if (!point || point.price === undefined || isNaN(point.price)) return
+        if (index > stopIndex) return // Stop at the middle
+        const x = padding + chartWidth * (index / (chartData.length - 1))
+        const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+        if (firstValidPoint) {
+          ctx.moveTo(x, y)
+          firstValidPoint = false
+        } else {
+          ctx.lineTo(x, y)
+        }
+      })
+      ctx.stroke()
+      ctx.globalAlpha = 1.0
+
+      // Draw prediction line from the stop point to the end
+      if (predicted_next_price) {
+        ctx.beginPath()
+        ctx.strokeStyle = "#FFA500"
+        ctx.lineWidth = 2
+        ctx.globalAlpha = 0.7
+        ctx.imageSmoothingEnabled = true
+
+        // Start from the last point of the stopped history
+        const startPoint = chartData[stopIndex]
+        if (startPoint) {
+          const startX = padding + chartWidth * (stopIndex / (chartData.length - 1))
+          const startY = padding + chartHeight * (1 - (startPoint.price - minValue) / valueRange)
+          ctx.moveTo(startX, startY)
+          for (let i = stopIndex + 1; i < chartData.length; i++) {
+            const point = chartData[i]
+            if (!point || point.price === undefined || isNaN(point.price)) continue
+            const x = padding + chartWidth * (i / (chartData.length - 1))
+            const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+            ctx.lineTo(x, y)
+          }
+          ctx.stroke()
+        }
+      }
+      ctx.globalAlpha = 1.0
+
+      // Draw grid lines and labels
+      drawGridLines(ctx, width, height, padding, chartHeight, minValue, maxValue, valueRange)
     }
-  }, [chartData, isPredicting, chartScale, chartOffset, chartVerticalOffset])
+  }, [chartData, predicted_next_price])
 
   // Handle mouse down on chart for dragging
   const handleChartMouseDown = (e) => {
@@ -1655,7 +1684,7 @@ const Predict = () => {
     if (!isDragging || !chartRef.current) return
 
     const canvas = chartRef.current
-    const ctx = canvas.getContext('2d')
+    const ctx = canvas.getContext("2d")
     const width = canvas.width
     const height = canvas.height
 
@@ -1664,12 +1693,12 @@ const Predict = () => {
     const deltaY = e.clientY - dragStartY
 
     // Update chart offset
-    setChartOffset(prev => {
+    setChartOffset((prev) => {
       const newOffset = prev + deltaX
       // Limit the offset to prevent dragging too far
       return Math.min(Math.max(newOffset, -width * 2), width * 2)
     })
-    setChartVerticalOffset(prev => {
+    setChartVerticalOffset((prev) => {
       const newOffset = prev + deltaY
       // Limit vertical offset to prevent dragging too far
       return Math.min(Math.max(newOffset, -height * 2), height * 2)
@@ -1683,8 +1712,8 @@ const Predict = () => {
     ctx.clearRect(0, 0, width, height)
 
     // Set background
-    ctx.globalCompositeOperation = 'source-over'
-    ctx.fillStyle = '#0a0e17'
+    ctx.globalCompositeOperation = "source-over"
+    ctx.fillStyle = "#0a0e17"
     ctx.fillRect(0, 0, width, height)
 
     // Calculate chart dimensions
@@ -1694,9 +1723,9 @@ const Predict = () => {
 
     // Find min and max values from extended data
     const allData = [...extendedChartData, ...chartData]
-    const values = allData.map(d => d.price).filter(v => !isNaN(v) && v !== undefined)
+    const values = allData.map((d) => d.price).filter((v) => !isNaN(v) && v !== undefined)
     if (values.length === 0) return
-    
+
     const minValue = Math.min(...values)
     const maxValue = Math.max(...values)
     const valueRange = maxValue - minValue || 1
@@ -1707,45 +1736,45 @@ const Predict = () => {
 
     // Draw grid lines
     ctx.lineWidth = 1.5 // Increased line width for bolder lines
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)' // Increased opacity for sharper lines
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.2)" // Increased opacity for sharper lines
     for (let i = 0; i <= 5; i++) {
-        const y = padding + (chartHeight * (1 - i / 5))
-        ctx.beginPath()
-        ctx.moveTo(padding, y)
-        ctx.lineTo(width - padding, y)
-        ctx.stroke()
+      const y = padding + chartHeight * (1 - i / 5)
+      ctx.beginPath()
+      ctx.moveTo(padding, y)
+      ctx.lineTo(width - padding, y)
+      ctx.stroke()
     }
 
     // Draw vertical grid lines and future time labels
     const futureTimePoints = generateFutureTimePoints(timeframe)
     futureTimePoints.forEach((point, i) => {
-      const xPos = padding + (chartWidth * (i / (futureTimePoints.length - 1)))
-      
+      const xPos = padding + chartWidth * (i / (futureTimePoints.length - 1))
+
       // Draw vertical grid line
       ctx.beginPath()
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)'
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.1)"
       ctx.moveTo(xPos, padding)
       ctx.lineTo(xPos, height - padding)
       ctx.stroke()
 
       // Draw time label
-      ctx.fillStyle = '#ffffff'
-      ctx.font = '10px Arial'
-      ctx.textAlign = 'center'
+      ctx.fillStyle = "#ffffff"
+      ctx.font = "10px Arial"
+      ctx.textAlign = "center"
       ctx.fillText(formatTimeLabel(point.time), xPos, height - padding + 15)
     })
 
     // Draw price line for historical data
     ctx.beginPath()
-    ctx.strokeStyle = 'rgba(91, 192, 222, 0.5)' // Slightly transparent for historical data
+    ctx.strokeStyle = "rgba(91, 192, 222, 0.5)" // Slightly transparent for historical data
     ctx.lineWidth = 1
 
     let firstValidPoint = true
     allData.forEach((point, index) => {
       if (!point || point.price === undefined || isNaN(point.price)) return
 
-      const x = padding + (chartWidth * (index / (allData.length - 1)))
-      const y = padding + (chartHeight * (1 - (point.price - minValue) / valueRange))
+      const x = padding + chartWidth * (index / (allData.length - 1))
+      const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
 
       if (firstValidPoint) {
         ctx.moveTo(x, y)
@@ -1759,15 +1788,15 @@ const Predict = () => {
 
     // Draw current price line on top
     ctx.beginPath()
-    ctx.strokeStyle = '#5bc0de'
+    ctx.strokeStyle = "#5bc0de"
     ctx.lineWidth = 2
 
     firstValidPoint = true
     chartData.forEach((point, index) => {
       if (!point || point.price === undefined || isNaN(point.price)) return
 
-      const x = padding + (chartWidth * (index / (chartData.length - 1)))
-      const y = padding + (chartHeight * (1 - (point.price - minValue) / valueRange))
+      const x = padding + chartWidth * (index / (chartData.length - 1))
+      const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
 
       if (firstValidPoint) {
         ctx.moveTo(x, y)
@@ -1794,113 +1823,113 @@ const Predict = () => {
 
   // Draw the stats chart
   const drawStatsChart = () => {
-    if (!statsChartRef.current || !selectedItem) return;
+    if (!statsChartRef.current || !selectedItem) return
 
-    const canvas = statsChartRef.current;
-    const ctx = canvas.getContext('2d');
-    const width = canvas.width;
-    const height = canvas.height;
-    const centerX = width / 2;
-    const centerY = height / 2;
-    const radius = Math.min(width, height) * 0.35;
-    
+    const canvas = statsChartRef.current
+    const ctx = canvas.getContext("2d")
+    const width = canvas.width
+    const height = canvas.height
+    const centerX = width / 2
+    const centerY = height / 2
+    const radius = Math.min(width, height) * 0.35
+
     // Clear canvas
-    ctx.clearRect(0, 0, width, height);
+    ctx.clearRect(0, 0, width, height)
 
     // Draw background arc
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, radius, Math.PI, 0);
-    ctx.lineWidth = 8; // Reduced from 20 to 8
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-    ctx.stroke();
+    ctx.beginPath()
+    ctx.arc(centerX, centerY, radius, Math.PI, 0)
+    ctx.lineWidth = 8 // Reduced from 20 to 8
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.1)"
+    ctx.stroke()
 
     // Calculate value angle (24h change)
-    const value = selectedItem.price_change_percentage_24h || 0;
-    const normalizedValue = Math.max(-20, Math.min(20, value));
-    const valueAngle = Math.PI + (normalizedValue / 20) * Math.PI;
+    const value = selectedItem.price_change_percentage_24h || 0
+    const normalizedValue = Math.max(-20, Math.min(20, value))
+    const valueAngle = Math.PI + (normalizedValue / 20) * Math.PI
 
     // Draw value arc with gradient
-    const gradient = ctx.createLinearGradient(0, 0, width, 0);
-    gradient.addColorStop(0, '#4CAF50');
-    gradient.addColorStop(0.5, '#FFC107');
-    gradient.addColorStop(1, '#F44336');
+    const gradient = ctx.createLinearGradient(0, 0, width, 0)
+    gradient.addColorStop(0, "#4CAF50")
+    gradient.addColorStop(0.5, "#FFC107")
+    gradient.addColorStop(1, "#F44336")
 
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, radius, Math.PI, valueAngle);
-    ctx.lineWidth = 8; // Reduced from 20 to 8
-    ctx.strokeStyle = gradient;
-    ctx.stroke();
+    ctx.beginPath()
+    ctx.arc(centerX, centerY, radius, Math.PI, valueAngle)
+    ctx.lineWidth = 8 // Reduced from 20 to 8
+    ctx.strokeStyle = gradient
+    ctx.stroke()
 
     // Draw tick marks
-    const tickLength = 10;
-    const tickWidth = 2;
-    const tickRadius = radius + 15;
-    
-    for (let i = 0; i <= 4; i++) {
-      const angle = Math.PI + (i / 4) * Math.PI;
-      const startX = centerX + (radius - tickLength) * Math.cos(angle);
-      const startY = centerY + (radius - tickLength) * Math.sin(angle);
-      const endX = centerX + (radius + tickLength) * Math.cos(angle);
-      const endY = centerY + (radius + tickLength) * Math.sin(angle);
+    const tickLength = 10
+    const tickWidth = 2
+    const tickRadius = radius + 15
 
-      ctx.beginPath();
-      ctx.moveTo(startX, startY);
-      ctx.lineTo(endX, endY);
-      ctx.lineWidth = tickWidth;
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-      ctx.stroke();
+    for (let i = 0; i <= 4; i++) {
+      const angle = Math.PI + (i / 4) * Math.PI
+      const startX = centerX + (radius - tickLength) * Math.cos(angle)
+      const startY = centerY + (radius - tickLength) * Math.sin(angle)
+      const endX = centerX + (radius + tickLength) * Math.cos(angle)
+      const endY = centerY + (radius + tickLength) * Math.sin(angle)
+
+      ctx.beginPath()
+      ctx.moveTo(startX, startY)
+      ctx.lineTo(endX, endY)
+      ctx.lineWidth = tickWidth
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.5)"
+      ctx.stroke()
 
       // Draw labels
-      const labelX = centerX + (tickRadius + 20) * Math.cos(angle);
-      const labelY = centerY + (tickRadius + 20) * Math.sin(angle);
-      ctx.font = '12px Arial';
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const label = i === 0 ? '-20%' : i === 1 ? '-10%' : i === 2 ? '0%' : i === 3 ? '+10%' : '+20%';
-      ctx.fillText(label, labelX, labelY);
+      const labelX = centerX + (tickRadius + 20) * Math.cos(angle)
+      const labelY = centerY + (tickRadius + 20) * Math.sin(angle)
+      ctx.font = "12px Arial"
+      ctx.fillStyle = "rgba(255, 255, 255, 0.7)"
+      ctx.textAlign = "center"
+      ctx.textBaseline = "middle"
+      const label = i === 0 ? "-20%" : i === 1 ? "-10%" : i === 2 ? "0%" : i === 3 ? "+10%" : "+20%"
+      ctx.fillText(label, labelX, labelY)
     }
 
     // Draw needle
-    const needleLength = radius * 0.9;
-    const needleWidth = 4;
-    const needleColor = value >= 0 ? '#4CAF50' : '#F44336';
-    
+    const needleLength = radius * 0.9
+    const needleWidth = 4
+    const needleColor = value >= 0 ? "#4CAF50" : "#F44336"
+
     // Draw needle base
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, 8, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    ctx.beginPath()
+    ctx.arc(centerX, centerY, 8, 0, Math.PI * 2)
+    ctx.fillStyle = "rgba(255, 255, 255, 0.2)"
+    ctx.fill()
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.3)"
+    ctx.lineWidth = 2
+    ctx.stroke()
 
     // Draw needle
-    ctx.beginPath();
-    ctx.moveTo(centerX, centerY);
-    const needleEndX = centerX + needleLength * Math.cos(valueAngle);
-    const needleEndY = centerY + needleLength * Math.sin(valueAngle);
-    ctx.lineTo(needleEndX, needleEndY);
-    ctx.lineWidth = needleWidth;
-    ctx.strokeStyle = needleColor;
-    ctx.stroke();
+    ctx.beginPath()
+    ctx.moveTo(centerX, centerY)
+    const needleEndX = centerX + needleLength * Math.cos(valueAngle)
+    const needleEndY = centerY + needleLength * Math.sin(valueAngle)
+    ctx.lineTo(needleEndX, needleEndY)
+    ctx.lineWidth = needleWidth
+    ctx.strokeStyle = needleColor
+    ctx.stroke()
 
     // Draw needle tip
-    ctx.beginPath();
-    ctx.arc(needleEndX, needleEndY, 4, 0, Math.PI * 2);
-    ctx.fillStyle = needleColor;
-    ctx.fill();
+    ctx.beginPath()
+    ctx.arc(needleEndX, needleEndY, 4, 0, Math.PI * 2)
+    ctx.fillStyle = needleColor
+    ctx.fill()
 
     // Draw center text
-    ctx.font = 'bold 16px Arial';
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('24h Change', centerX, centerY - 20);
-    
-    ctx.font = 'bold 24px Arial';
-    ctx.fillStyle = needleColor;
-    ctx.fillText(`${value.toFixed(2)}%`, centerX, centerY + 20);
+    ctx.font = "bold 16px Arial"
+    ctx.fillStyle = "rgba(255, 255, 255, 0.9)"
+    ctx.textAlign = "center"
+    ctx.textBaseline = "middle"
+    ctx.fillText("24h Change", centerX, centerY - 20)
+
+    ctx.font = "bold 24px Arial"
+    ctx.fillStyle = needleColor
+    ctx.fillText(`${value.toFixed(2)}%`, centerX, centerY + 20)
   }
 
   // Add useEffect to redraw stats chart when coinStats changes
@@ -1925,11 +1954,14 @@ const Predict = () => {
       }
     })
 
-    // Show notification
+    // Clear chart and show loading notification
+    setChartData([])
+    setIsLoading(true)
     showNotification({
       type: "info",
-      message: `Updating to ${tf} timeframe`,
-      details: "Fetching new data...",
+      message: `Training model for ${tf} timeframe...`,
+      details: "Please wait while the model is being trained for the selected timeframe. This may take a few seconds.",
+      // No duration: stays until user closes
     })
 
     // Update the timeframe in the Redux store and fetch new data
@@ -2009,23 +2041,23 @@ const Predict = () => {
   const generateTradingRecommendation = (predictedPrice, currentPrice, timeframe) => {
     const priceChange = ((predictedPrice - currentPrice) / currentPrice) * 100
     const volatility = Math.abs(priceChange)
-    
-    let recommendation = {
-      action: '',
+
+    const recommendation = {
+      action: "",
       confidence: 0,
-      reasoning: '',
+      reasoning: "",
       timeframe: timeframe,
-      priceChange: priceChange
+      priceChange: priceChange,
     }
 
     // Calculate recommendation based on price change and volatility
     if (priceChange > 0) {
-      recommendation.action = 'BUY'
-      recommendation.confidence = Math.min(100, Math.max(50, 50 + (priceChange * 2)))
+      recommendation.action = "BUY"
+      recommendation.confidence = Math.min(100, Math.max(50, 50 + priceChange * 2))
       recommendation.reasoning = `Good time to buy - Predicted ${timeframe} price increase of ${priceChange.toFixed(2)}%`
     } else {
-      recommendation.action = 'SELL'
-      recommendation.confidence = Math.min(100, Math.max(50, 50 + (Math.abs(priceChange) * 2)))
+      recommendation.action = "SELL"
+      recommendation.confidence = Math.min(100, Math.max(50, 50 + Math.abs(priceChange) * 2))
       recommendation.reasoning = `Good time to sell - Predicted ${timeframe} price decrease of ${Math.abs(priceChange).toFixed(2)}%`
     }
 
@@ -2050,21 +2082,31 @@ const Predict = () => {
         type: "info",
         message: `Prediction started for ${selectedItem.name}`,
         details: "Analyzing market data...",
-        duration: 3000
+        duration: 3000,
       })
 
       // Get current chart data for immediate update
       const currentChartData = chartData.length > 0 ? chartData : await fetchChartData()
-      
+
       // Immediately update chart with a temporary prediction line
       const lastTime = currentChartData[currentChartData.length - 1]?.fullTime || new Date()
-      
+
       // Calculate the exact timeframe boundary
       const timeframeBoundary = new Date(lastTime.getTime() + getTimeframeMilliseconds(timeframe))
-      
+
       // Calculate a temporary predicted price based on the last known price
       const lastPrice = currentChartData[currentChartData.length - 1]?.price || selectedItem.current_price
-      const tempPredictedPrice = lastPrice * (1 + (Math.random() * 0.02 - 0.01))
+
+      // Apply timeframe-specific scaling to temporary prediction
+      const timeframeScaling = {
+        "30m": 0.5, // Reduce prediction magnitude for shorter timeframe
+        "1h": 1.0, // Base scaling
+        "4h": 1.5, // Increase prediction magnitude for longer timeframe
+        "24h": 2.0, // Further increase for daily timeframe
+      }
+
+      const scalingFactor = timeframeScaling[timeframe] || 1.0
+      const tempPredictedPrice = lastPrice * (1 + (Math.random() * 0.02 - 0.01) * scalingFactor)
 
       const tempChartData = [
         ...currentChartData,
@@ -2074,42 +2116,62 @@ const Predict = () => {
           isPrediction: true,
           isTemporary: true,
           fullTime: timeframeBoundary,
-        }
+        },
       ]
 
       setChartData(tempChartData)
-      
+
       // Dispatch prediction action with current symbol and timeframe
-      const result = await dispatch(PredictNextPrice({ 
-        symbol: selectedItem.symbol, 
-        timeframe 
-      })).unwrap()
+      const result = await dispatch(
+        PredictNextPrice({
+          symbol: selectedItem.symbol,
+          timeframe,
+        }),
+      ).unwrap()
 
       if (result.predicted_price) {
-        // Generate trading recommendation
+        // Validate prediction based on timeframe
+        const maxAllowedChange = {
+          "30m": 0.02, // 2% max change for 30m
+          "1h": 0.04, // 4% max change for 1h
+          "4h": 0.08, // 8% max change for 4h
+          "24h": 0.15, // 15% max change for 24h
+        }
+
+        const priceChange = Math.abs((result.predicted_price - selectedItem.current_price) / selectedItem.current_price)
+        const maxChange = maxAllowedChange[timeframe] || 0.04
+
+        // If prediction exceeds maximum allowed change, adjust it
+        let adjustedPredictedPrice = result.predicted_price
+        if (priceChange > maxChange) {
+          const direction = result.predicted_price > selectedItem.current_price ? 1 : -1
+          adjustedPredictedPrice = selectedItem.current_price * (1 + direction * maxChange)
+        }
+
+        // Generate trading recommendation with adjusted prediction
         const recommendation = generateTradingRecommendation(
-          result.predicted_price,
+          adjustedPredictedPrice,
           selectedItem.current_price,
-          timeframe
+          timeframe,
         )
-        
+
         // Update trading recommendation state
         setTradingRecommendation(recommendation)
 
         // Update the predicted price in state
-        setPredictedPrice(result.predicted_price)
+        setPredictedPrice(adjustedPredictedPrice)
         setShowPrediction(true)
 
-        // Update chart with actual prediction
+        // Update chart with adjusted prediction
         const updatedChartData = [
           ...currentChartData,
           {
             time: timeframeBoundary.toLocaleTimeString(),
-            price: result.predicted_price,
+            price: adjustedPredictedPrice,
             isPrediction: true,
             isTemporary: false,
             fullTime: timeframeBoundary,
-          }
+          },
         ]
 
         setChartData(updatedChartData)
@@ -2119,10 +2181,10 @@ const Predict = () => {
         // Show prediction completion notification with trading recommendation
         setTimeout(() => {
           showNotification({
-            type: recommendation.action === 'BUY' ? 'success' : 'warning',
+            type: recommendation.action === "BUY" ? "success" : "warning",
             message: `${recommendation.action} Recommendation for ${selectedItem.name}`,
             details: `${recommendation.reasoning}\nConfidence: ${recommendation.confidence.toFixed(0)}%`,
-            duration: 5000
+            duration: 5000,
           })
         }, 1000)
       }
@@ -2133,7 +2195,7 @@ const Predict = () => {
         type: "error",
         message: `Prediction failed for ${selectedItem.name}`,
         details: "Please try again later",
-        duration: 3000
+        duration: 3000,
       })
     } finally {
       setIsPredicting(false)
@@ -2167,20 +2229,30 @@ const Predict = () => {
     const avgChange =
       priceChanges.length > 0 ? priceChanges.reduce((sum, change) => sum + change, 0) / priceChanges.length : 0
 
-    // Calculate volatility (standard deviation of price changes)
-    const volatility =
+    // Calculate volatility with timeframe-specific scaling
+    const baseVolatility =
       priceChanges.length > 0
         ? Math.sqrt(
             priceChanges.reduce((sum, change) => sum + Math.pow(change - avgChange, 2), 0) / priceChanges.length,
           )
         : 0.02
 
+    // Adjust volatility based on timeframe
+    const timeframeVolatilityMultiplier = {
+      "30m": 0.5, // Reduce volatility for shorter timeframe
+      "1h": 1.0, // Base multiplier
+      "4h": 1.5, // Increase volatility for longer timeframe
+      "24h": 2.0, // Further increase for daily timeframe
+    }
+
+    const volatility = baseVolatility * (timeframeVolatilityMultiplier[timeframe] || 1.0)
+
     // Determine trend based on recent movement and momentum
     const lastPrice = recentPrices[recentPrices.length - 1].price
     const firstPrice = recentPrices[0].price
     const overallTrend = lastPrice > firstPrice ? "bullish" : "bearish"
 
-    // Calculate momentum (acceleration of price changes)
+    // Calculate momentum with timeframe-specific scaling
     const firstHalfChanges = priceChanges.slice(0, Math.floor(priceChanges.length / 2))
     const secondHalfChanges = priceChanges.slice(Math.floor(priceChanges.length / 2))
 
@@ -2202,37 +2274,69 @@ const Predict = () => {
         (change) => (overallTrend === "bullish" && change > 0) || (overallTrend === "bearish" && change < 0),
       ).length / priceChanges.length
 
-    const confidence = Math.min(95, Math.max(60, Math.floor(trendConsistency * 100 - volatility * 500)))
+    // Adjust confidence calculation based on timeframe
+    const timeframeConfidenceMultiplier = {
+      "30m": 0.8, // Lower confidence for shorter timeframe
+      "1h": 1.0, // Base confidence
+      "4h": 1.2, // Higher confidence for longer timeframe
+      "24h": 1.5, // Highest confidence for daily timeframe
+    }
 
-    // Predict future price based on trend, momentum and volatility
-    const predictedChange = avgChange * 5 + momentum * 10 + (Math.random() - 0.5) * volatility * 2
+    const confidence = Math.min(
+      95,
+      Math.max(
+        60,
+        Math.floor(trendConsistency * 100 * (timeframeConfidenceMultiplier[timeframe] || 1.0) - volatility * 500),
+      ),
+    )
+
+    // Predict future price with timeframe-specific scaling
+    const timeframePredictionMultiplier = {
+      "30m": 0.5, // Reduce prediction magnitude for shorter timeframe
+      "1h": 1.0, // Base multiplier
+      "4h": 1.5, // Increase prediction magnitude for longer timeframe
+      "24h": 2.0, // Further increase for daily timeframe
+    }
+
+    const predictionMultiplier = timeframePredictionMultiplier[timeframe] || 1.0
+    const predictedChange =
+      (avgChange * 5 + momentum * 10) * predictionMultiplier + (Math.random() - 0.5) * volatility * 2
     const predictedPrice = lastPrice * (1 + predictedChange)
 
-    // Calculate support and resistance levels
+    // Calculate support and resistance levels with timeframe-specific scaling
     const prices = recentPrices.map((p) => p.price)
     const minPrice = Math.min(...prices)
     const maxPrice = Math.max(...prices)
 
-    const support = minPrice * (1 - volatility)
-    const resistance = maxPrice * (1 + volatility)
+    const support = minPrice * (1 - volatility * predictionMultiplier)
+    const resistance = maxPrice * (1 + volatility * predictionMultiplier)
 
-    // Generate trading volume prediction
-    const volumeChange = (Math.random() - 0.3) * 20 // -30% to +70% change
+    // Generate trading volume prediction with timeframe-specific scaling
+    const volumeChange = (Math.random() - 0.3) * 20 * predictionMultiplier
     const predictedVolume = selectedItem.total_volume * (1 + volumeChange / 100)
 
-    // Calculate price targets
-    const shortTermTarget = predictedPrice * (1 + Math.random() * 0.05 * (overallTrend === "bullish" ? 1 : -1))
-    const midTermTarget = predictedPrice * (1 + Math.random() * 0.15 * (overallTrend === "bullish" ? 1 : -1))
-    const longTermTarget = predictedPrice * (1 + Math.random() * 0.3 * (overallTrend === "bullish" ? 1 : -1))
+    // Calculate price targets with timeframe-specific scaling
+    const shortTermTarget =
+      predictedPrice * (1 + Math.random() * 0.05 * predictionMultiplier * (overallTrend === "bullish" ? 1 : -1))
+    const midTermTarget =
+      predictedPrice * (1 + Math.random() * 0.15 * predictionMultiplier * (overallTrend === "bullish" ? 1 : -1))
+    const longTermTarget =
+      predictedPrice * (1 + Math.random() * 0.3 * predictionMultiplier * (overallTrend === "bullish" ? 1 : -1))
 
-    // Calculate market sentiment score (0-100)
-    const sentimentScore = Math.min(100, Math.max(0, 50 + avgChange * 1000 + momentum * 500))
+    // Calculate market sentiment score with timeframe-specific scaling
+    const sentimentScore = Math.min(
+      100,
+      Math.max(0, 50 + avgChange * 1000 * predictionMultiplier + momentum * 500 * predictionMultiplier),
+    )
 
-    // Calculate risk assessment (1-10)
-    const riskScore = Math.min(10, Math.max(1, Math.round(volatility * 100)))
+    // Calculate risk assessment with timeframe-specific scaling
+    const riskScore = Math.min(10, Math.max(1, Math.round(volatility * 100 * predictionMultiplier)))
 
-    // Calculate probability of price increase
-    const priceIncreaseProb = Math.min(99, Math.max(1, Math.round(50 + momentum * 500 + avgChange * 300)))
+    // Calculate probability of price increase with timeframe-specific scaling
+    const priceIncreaseProb = Math.min(
+      99,
+      Math.max(1, Math.round(50 + momentum * 500 * predictionMultiplier + avgChange * 300 * predictionMultiplier)),
+    )
 
     // Update the stats probability with the new prediction
     if (coinStats) {
@@ -2332,7 +2436,9 @@ const Predict = () => {
         supply: {
           current: selectedItem.circulating_supply || 0,
           max: selectedItem.total_supply || 0,
-          percentCirculating: selectedItem.total_supply ? (selectedItem.circulating_supply / selectedItem.total_supply) * 100 : 100,
+          percentCirculating: selectedItem.total_supply
+            ? (selectedItem.circulating_supply / selectedItem.total_supply) * 100
+            : 100,
         },
         volumeRank: Math.floor(Math.random() * 20) + 1,
         volatility: Math.abs(selectedItem.price_change_percentage_24h) || Math.random() * 5,
@@ -2342,6 +2448,128 @@ const Predict = () => {
   }
 
   const [tradingRecommendation, setTradingRecommendation] = useState(null)
+
+  // Add cache and debounce for chart data fetching
+  const chartDataCache = {}
+  let chartDataDebounceTimer = null
+
+  // Helper to get cache key (use both id and symbol for uniqueness)
+  const getChartCacheKey = (item, tf) => `${item?.id || ""}_${item?.symbol || ""}_${tf}`
+
+  // Debounced and cached fetchChartData
+  const debouncedFetchChartData = (item, tf, setChartData, setIsLoading, setLocalError) => {
+    if (!item) return
+    const cacheKey = getChartCacheKey(item, tf)
+    const now = Date.now()
+    const cacheEntry = chartDataCache[cacheKey]
+
+    // If cached and less than 1 minute old, use cache
+    if (cacheEntry && now - cacheEntry.timestamp < 60 * 1000) {
+      setChartData(cacheEntry.data)
+      setIsLoading(false)
+      return
+    }
+
+    // Debounce API calls
+    if (chartDataDebounceTimer) clearTimeout(chartDataDebounceTimer)
+    chartDataDebounceTimer = setTimeout(async () => {
+      setIsLoading(true)
+      setLocalError(null)
+      try {
+        // Try backend and CoinGecko as before
+        let data = null
+        try {
+          const response = await fetchWithTimeout(
+            `${process.env.REACT_APP_API_URL || "http://localhost:8000"}/api/v1/predictions/previous_predictions`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                symbol: item.symbol,
+                timeframe: tf,
+                days: tf === "4h" ? 7 : tf === "24h" ? 30 : tf === "30m" ? 0.5 : 1,
+              }),
+            },
+          )
+          if (response.ok) {
+            const json = await response.json()
+            if (json && json.actuals && json.predictions) {
+              data = processTimeframeData(json, item, tf)
+            }
+          }
+        } catch (error) {}
+        if (!data) {
+          try {
+            const days = tf === "4h" ? 7 : tf === "24h" ? 30 : tf === "30m" ? 0.5 : 1
+            const response = await fetchWithTimeout(
+              `https://api.coingecko.com/api/v3/coins/${item.id}/market_chart?vs_currency=usd&days=${days}&interval=${timeframeToInterval(tf)}`,
+              { method: "GET", headers: { "Content-Type": "application/json" } },
+            )
+            if (response.ok) {
+              const json = await response.json()
+              if (json && json.prices) {
+                data = processTimeframeData(json, item, tf)
+              }
+            }
+          } catch (error) {}
+        }
+        if (!data) {
+          data = generateRealisticData(item, tf)
+        }
+        chartDataCache[cacheKey] = { data, timestamp: Date.now() }
+        setChartData(data)
+        setIsLoading(false)
+      } catch (error) {
+        setLocalError("Failed to fetch chart data. Using fallback data.")
+        const data = generateRealisticData(item, tf)
+        chartDataCache[cacheKey] = { data, timestamp: Date.now() }
+        setChartData(data)
+        setIsLoading(false)
+      }
+    }, 1000) // 1 second debounce
+  }
+
+  // Ensure drawChart is called on every animation frame for line animation
+  useEffect(() => {
+    drawChart()
+    // eslint-disable-next-line
+  }, [historyAnimationProgress, predictionAnimationProgress])
+
+  // Remove notification when new data is ready
+  useEffect(() => {
+    if (!isLoading && chartData.length > 0) {
+      setNotification(null)
+    }
+  }, [isLoading, chartData])
+
+  // Add animation effect
+  useEffect(() => {
+    let animationFrame
+    let startTime = null
+    const duration = 1000 // 1 second animation
+
+    const animate = (timestamp) => {
+      if (!startTime) startTime = timestamp
+      const progress = Math.min((timestamp - startTime) / duration, 1)
+
+      setHistoryAnimationProgress(progress)
+      if (showPredictionLine) {
+        setPredictionAnimationProgress(progress)
+      }
+
+      if (progress < 1) {
+        animationFrame = requestAnimationFrame(animate)
+      }
+    }
+
+    animationFrame = requestAnimationFrame(animate)
+
+    return () => {
+      if (animationFrame) {
+        cancelAnimationFrame(animationFrame)
+      }
+    }
+  }, [chartData, showPredictionLine]) // Reset animation when data or prediction state changes
 
   if (!selectedItem) {
     return (
@@ -2397,11 +2625,7 @@ const Predict = () => {
                 </div>
                 <div className="market-predict__notification-text">
                   <h4>{notif.message}</h4>
-                  {typeof notif.details === 'string' ? (
-                    <p>{notif.details}</p>
-                  ) : (
-                    notif.details
-                  )}
+                  {typeof notif.details === "string" ? <p>{notif.details}</p> : notif.details}
                 </div>
                 <button
                   className="market-predict__notification-close"
@@ -2432,19 +2656,20 @@ const Predict = () => {
               #{selectedItem.market_cap_rank} {selectedItem.name} ({selectedItem.symbol.toUpperCase()})
             </h1>
             {tradingRecommendation && (
-              <div 
+              <div
                 className="market-predict__recommendation"
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  marginTop: '4px',
-                  padding: '4px 8px',
-                  borderRadius: '4px',
-                  backgroundColor: tradingRecommendation.action === 'BUY' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                  color: tradingRecommendation.action === 'BUY' ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)',
-                  fontSize: '14px',
-                  fontWeight: '500'
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  marginTop: "4px",
+                  padding: "4px 8px",
+                  borderRadius: "4px",
+                  backgroundColor:
+                    tradingRecommendation.action === "BUY" ? "rgba(34, 197, 94, 0.1)" : "rgba(239, 68, 68, 0.1)",
+                  color: tradingRecommendation.action === "BUY" ? "rgb(34, 197, 94)" : "rgb(239, 68, 68)",
+                  fontSize: "14px",
+                  fontWeight: "500",
                 }}
               >
                 <span>{tradingRecommendation.reasoning}</span>
@@ -2453,61 +2678,56 @@ const Predict = () => {
           </div>
         </div>
         <div className="market-predict__coin-price-info">
-          <div className="market-predict__current-price" style={{ color: '#22d3ee', fontSize: '29px' }}>
+          <div className="market-predict__current-price" style={{ color: "#22d3ee", fontSize: "29px" }}>
             ${selectedItem.current_price.toLocaleString()}
           </div>
           {showPrediction && predictedPrice && (
-            <div className="market-predict__predicted-price" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ color: '#ff4444', fontSize: '28px' }}>${predictedPrice.toLocaleString()}</span>
+            <div
+              className="market-predict__predicted-price"
+              style={{ display: "flex", alignItems: "center", gap: "10px" }}
+            >
+              <span style={{ color: "#ff4444", fontSize: "28px" }}>${predictedPrice.toLocaleString()}</span>
             </div>
           )}
 
-          <div className="market-predict__timestamp">
-            {formatUTCTime(utcTime)}
-          </div>
+          <div className="market-predict__timestamp">{formatUTCTime(utcTime)}</div>
         </div>
       </div>
 
       <div className="market-predict__chart-container">
-        <div className="market-predict__chart-wrapper" style={{ 
-          width: !showStats && !showProbability ? '100%' : '70%', 
-          height: '107%',
-          '@media (max-width: 1024px)': {
-            width: !showStats && !showProbability ? '100%' : '60%'
-          },
-          '@media (max-width: 768px)': {
-            width: '113%',
-            height: '16vh'
-          }
-        }}>
+        <div
+          className="market-predict__chart-wrapper"
+          style={{
+            width: !showStats && !showProbability ? "100%" : "70%",
+            height: "107%",
+            "@media (max-width: 1024px)": {
+              width: !showStats && !showProbability ? "100%" : "60%",
+            },
+            "@media (max-width: 768px)": {
+              width: "113%",
+              height: "16vh",
+            },
+          }}
+        >
           <div className="market-predict__chart-container-inner">
-            <div className="market-predict__chart-controls-overlay" style={{ 
-              left: '10px', 
-              right: 'auto',
-              '@media (max-width: 768px)': {
-                left: '5px'
-              }
-            }}>
+            <div
+              className="market-predict__chart-controls-overlay"
+              style={{
+                left: "10px",
+                right: "auto",
+                "@media (max-width: 768px)": {
+                  left: "5px",
+                },
+              }}
+            >
               <div className="market-predict__zoom-controls">
-                <button 
-                  className="market-predict__zoom-button" 
-                  onClick={handleZoomIn} 
-                  title="Zoom In"
-                >
+                <button className="market-predict__zoom-button" onClick={handleZoomIn} title="Zoom In">
                   <ZoomIn size={18} />
                 </button>
-                <button 
-                  className="market-predict__zoom-button" 
-                  onClick={handleZoomOut} 
-                  title="Zoom Out"
-                >
+                <button className="market-predict__zoom-button" onClick={handleZoomOut} title="Zoom Out">
                   <ZoomOut size={18} />
                 </button>
-                <button 
-                  className="market-predict__zoom-button" 
-                  onClick={handleChartReset} 
-                  title="Reset View"
-                >
+                <button className="market-predict__zoom-button" onClick={handleChartReset} title="Reset View">
                   <Move size={18} />
                 </button>
               </div>
@@ -2521,11 +2741,11 @@ const Predict = () => {
               onTouchStart={handleChartTouchStart}
               onTouchMove={handleChartTouchMove}
               onTouchEnd={handleChartTouchEnd}
-              style={{ 
+              style={{
                 cursor: isDragging ? "grabbing" : "grab",
-                '@media (max-width: 768px)': {
-                  height: '200px'
-                }
+                "@media (max-width: 768px)": {
+                  height: "200px",
+                },
               }}
             ></canvas>
             {error && <div className="market-predict__error">{error}</div>}
@@ -2535,18 +2755,18 @@ const Predict = () => {
         {/* Right panel - conditionally show either probability panel or stats panel */}
         {(showStats || showProbability) && (
           <motion.div
-            className={`market-predict__${showStats ? 'stats' : 'probability'}-panel`}
+            className={`market-predict__${showStats ? "stats" : "probability"}-panel`}
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.5 }}
             style={{
-              '@media (max-width: 1024px)': {
-                width: '40%'
+              "@media (max-width: 1024px)": {
+                width: "40%",
               },
-              '@media (max-width: 768px)': {
-                width: '100%',
-                marginTop: '20px'
-              }
+              "@media (max-width: 768px)": {
+                width: "100%",
+                marginTop: "20px",
+              },
             }}
           >
             {showStats ? (
@@ -2555,53 +2775,71 @@ const Predict = () => {
                   <div className="market-predict__stats-info">
                     {/* Market Overview Section */}
                     <div className="market-predict__stats-section">
-                      <h3 style={{ fontSize: '18px', color: '#e0e0e0', marginBottom: '15px' }}>Market Overview</h3>
+                      <h3 style={{ fontSize: "18px", color: "#e0e0e0", marginBottom: "15px" }}>Market Overview</h3>
                       <div className="market-predict__stats-row">
                         <div className="market-predict__stats-label">Market Dominance</div>
-                        <div className="market-predict__stats-value">{coinStats?.marketDominance?.toFixed(2) || '0.00'}%</div>
+                        <div className="market-predict__stats-value">
+                          {coinStats?.marketDominance?.toFixed(2) || "0.00"}%
+                        </div>
                       </div>
                       <div className="market-predict__stats-row">
                         <div className="market-predict__stats-label">Market Share</div>
-                        <div className="market-predict__stats-value">{coinStats?.marketShare?.toFixed(2) || '0.00'}%</div>
+                        <div className="market-predict__stats-value">
+                          {coinStats?.marketShare?.toFixed(2) || "0.00"}%
+                        </div>
                       </div>
                       <div className="market-predict__stats-row">
                         <div className="market-predict__stats-label">24h Volume</div>
-                        <div className="market-predict__stats-value">${formatNumber(selectedItem?.total_volume || 0)}</div>
+                        <div className="market-predict__stats-value">
+                          ${formatNumber(selectedItem?.total_volume || 0)}
+                        </div>
                       </div>
                     </div>
 
                     {/* Predicted Price Change Section */}
-                    <div className="market-predict__stats-section" style={{ marginTop: '20px' }}>
-                      <h3 style={{ fontSize: '18px', color: '#e0e0e0', marginBottom: '15px' }}>Predicted Price Change</h3>
+                    <div className="market-predict__stats-section" style={{ marginTop: "20px" }}>
+                      <h3 style={{ fontSize: "18px", color: "#e0e0e0", marginBottom: "15px" }}>
+                        Predicted Price Change
+                      </h3>
                       <div className="market-predict__stats-row">
                         <div className="market-predict__stats-label">Predicted Price Change</div>
-                        <div className={`market-predict__stats-value ${predictedPriceChange >= 0 ? 'positive' : 'negative'}`}>
+                        <div
+                          className={`market-predict__stats-value ${predictedPriceChange >= 0 ? "positive" : "negative"}`}
+                        >
                           {predictedPriceChange !== null ? (
                             <>
-                              {predictedPriceChange >= 0 ? '+' : ''}
+                              {predictedPriceChange >= 0 ? "+" : ""}
                               {predictedPriceChange.toFixed(2)}%
                             </>
-                          ) : '-'}
+                          ) : (
+                            "-"
+                          )}
                         </div>
                       </div>
                     </div>
 
                     {/* Price Metrics Section */}
-                    <div className="market-predict__stats-section" style={{ marginTop: '20px' }}>
-                      <h3 style={{ fontSize: '18px', color: '#e0e0e0', marginBottom: '15px' }}>Price Metrics</h3>
+                    <div className="market-predict__stats-section" style={{ marginTop: "20px" }}>
+                      <h3 style={{ fontSize: "18px", color: "#e0e0e0", marginBottom: "15px" }}>Price Metrics</h3>
                       <div className="market-predict__stats-row">
                         <div className="market-predict__stats-label">Current Price</div>
-                        <div className="market-predict__stats-value">${selectedItem.current_price.toLocaleString()}</div>
+                        <div className="market-predict__stats-value">
+                          ${selectedItem.current_price.toLocaleString()}
+                        </div>
                       </div>
                       <div className="market-predict__stats-row">
                         <div className="market-predict__stats-label">Price Change</div>
-                        <div className={`market-predict__stats-value ${predictedPriceChange >= 0 ? 'positive' : 'negative'}`}>
+                        <div
+                          className={`market-predict__stats-value ${predictedPriceChange >= 0 ? "positive" : "negative"}`}
+                        >
                           {predictedPriceChange !== null ? (
                             <>
-                              {predictedPriceChange >= 0 ? '+' : ''}
+                              {predictedPriceChange >= 0 ? "+" : ""}
                               {predictedPriceChange.toFixed(2)}%
                             </>
-                          ) : '-'}
+                          ) : (
+                            "-"
+                          )}
                         </div>
                       </div>
                       <div className="market-predict__stats-row">
@@ -2625,11 +2863,13 @@ const Predict = () => {
                     </div>
 
                     {/* Supply Metrics Section */}
-                    <div className="market-predict__stats-section" style={{ marginTop: '20px' }}>
-                      <h3 style={{ fontSize: '18px', color: '#e0e0e0', marginBottom: '15px' }}>Supply Metrics</h3>
+                    <div className="market-predict__stats-section" style={{ marginTop: "20px" }}>
+                      <h3 style={{ fontSize: "18px", color: "#e0e0e0", marginBottom: "15px" }}>Supply Metrics</h3>
                       <div className="market-predict__stats-row">
                         <div className="market-predict__stats-label">Circulating Supply</div>
-                        <div className="market-predict__stats-value">{formatNumber(coinStats?.supply?.current || 0)}</div>
+                        <div className="market-predict__stats-value">
+                          {formatNumber(coinStats?.supply?.current || 0)}
+                        </div>
                       </div>
                       <div className="market-predict__stats-row">
                         <div className="market-predict__stats-label">Max Supply</div>
@@ -2637,13 +2877,15 @@ const Predict = () => {
                       </div>
                       <div className="market-predict__stats-row">
                         <div className="market-predict__stats-label">Supply in Circulation</div>
-                        <div className="market-predict__stats-value">{coinStats?.supply?.percentCirculating?.toFixed(2) || 0}%</div>
+                        <div className="market-predict__stats-value">
+                          {coinStats?.supply?.percentCirculating?.toFixed(2) || 0}%
+                        </div>
                       </div>
                     </div>
 
                     {/* Market Health Section */}
-                    <div className="market-predict__stats-section" style={{ marginTop: '20px' }}>
-                      <h3 style={{ fontSize: '18px', color: '#e0e0e0', marginBottom: '15px' }}>Market Health</h3>
+                    <div className="market-predict__stats-section" style={{ marginTop: "20px" }}>
+                      <h3 style={{ fontSize: "18px", color: "#e0e0e0", marginBottom: "15px" }}>Market Health</h3>
                       <div className="market-predict__stats-row">
                         <div className="market-predict__stats-label">Volatility</div>
                         <div className="market-predict__stats-value">{coinStats?.volatility?.toFixed(2) || 0}</div>
@@ -2661,59 +2903,81 @@ const Predict = () => {
                 )}
               </div>
             ) : (
-              <div className="market-predict__analysis-summary" style={{ 
-                padding: '2px', 
-                display: 'flex', 
-                flexDirection: 'column', 
-                gap: '8px'
-              }}>
+              <div
+                className="market-predict__analysis-summary"
+                style={{
+                  padding: "2px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                }}
+              >
                 {/* Price Change Display */}
                 {currentPrice && predicted_next_price && !predictionLoading && !predictionError && (
-                  <div className="market-predict__price-change" style={{ 
-                    padding: '12px',
-                    backgroundColor: 'rgba(0, 0, 0, 0.2)',
-                    borderRadius: '8px',
-                    marginBottom: '12px'
-                  }}>
-                    <div style={{ color: '#999', marginBottom: '8px', fontSize: '14px' }}>
-                      Price Change Prediction
-                    </div>
-                    <div style={{ 
-                      color: predicted_next_price > currentPrice ? 'rgb(34, 211, 238)' : 'red',
-                      fontSize: '24px',
-                      fontWeight: '500'
-                    }}>
-                      {predicted_next_price > currentPrice ? '+' : ''}
-                      {((predicted_next_price - currentPrice) / currentPrice * 100).toFixed(2)}%
+                  <div
+                    className="market-predict__price-change"
+                    style={{
+                      padding: "12px",
+                      backgroundColor: "rgba(0, 0, 0, 0.2)",
+                      borderRadius: "8px",
+                      marginBottom: "12px",
+                    }}
+                  >
+                    <div style={{ color: "#999", marginBottom: "8px", fontSize: "14px" }}>Price Change Prediction</div>
+                    <div
+                      style={{
+                        color: predicted_next_price > currentPrice ? "rgb(34, 211, 238)" : "red",
+                        fontSize: "24px",
+                        fontWeight: "500",
+                      }}
+                    >
+                      {predicted_next_price > currentPrice ? "+" : ""}
+                      {(((predicted_next_price - currentPrice) / currentPrice) * 100).toFixed(2)}%
                     </div>
                   </div>
                 )}
-                       <div className="market-predict__price-change" style={{ 
-              color: predicted_next_price > selectedItem.current_price ? 'rgb(34, 211, 238)' : 'red',
-              fontSize: '1rem',
-              marginTop: '0.25rem',
-              marginBottom: '0.5rem'
-            }}>
-              Price Change: {predicted_next_price > selectedItem.current_price ? '+' : ''}
-              {((predicted_next_price - selectedItem.current_price) / selectedItem.current_price * 100).toFixed(2)}%
-            </div>
-                <div className="market-predict__confidence-meter" style={{ background: 'transparent', padding: '8px', marginBottom: '8px' }}>
-                  <div className="market-predict__confidence-label" style={{ marginBottom: '4px' }}>Confidence</div>
-                  <div className="market-predict__confidence-bar" style={{ backgroundColor: 'transparent', marginBottom: '4px' }}>
+                <div
+                  className="market-predict__price-change"
+                  style={{
+                    color: predicted_next_price > selectedItem.current_price ? "rgb(34, 211, 238)" : "red",
+                    fontSize: "1rem",
+                    marginTop: "0.25rem",
+                    marginBottom: "0.5rem",
+                  }}
+                >
+                  Price Change: {predicted_next_price > selectedItem.current_price ? "+" : ""}
+                  {(((predicted_next_price - selectedItem.current_price) / selectedItem.current_price) * 100).toFixed(
+                    2,
+                  )}
+                  %
+                </div>
+                <div
+                  className="market-predict__confidence-meter"
+                  style={{ background: "transparent", padding: "8px", marginBottom: "8px" }}
+                >
+                  <div className="market-predict__confidence-label" style={{ marginBottom: "4px" }}>
+                    Confidence
+                  </div>
+                  <div
+                    className="market-predict__confidence-bar"
+                    style={{ backgroundColor: "transparent", marginBottom: "4px" }}
+                  >
                     <div
                       className="market-predict__confidence-value"
-                      style={{ 
+                      style={{
                         width: `${probabilityData?.confidence || 75}%`,
                         backgroundColor: `hsl(180, 70%, 70%)`,
-                        height: '100%',
-                        transition: 'width 0.3s ease, background-color 0.3s ease'
+                        height: "100%",
+                        transition: "width 0.3s ease, background-color 0.3s ease",
                       }}
                     ></div>
                   </div>
-                  <div className="market-predict__confidence-percentage" style={{ marginBottom: '4px' }}>{probabilityData?.confidence || 75}%</div>
+                  <div className="market-predict__confidence-percentage" style={{ marginBottom: "4px" }}>
+                    {probabilityData?.confidence || 75}%
+                  </div>
                 </div>
 
-                <div className="market-predict__trend-indicator" style={{ marginBottom: '4px' }}>
+                <div className="market-predict__trend-indicator" style={{ marginBottom: "4px" }}>
                   <div
                     className={`market-predict__trend-badge market-predict__trend-badge--${probabilityData?.trend === "bullish" ? "bullish" : "bearish"}`}
                   >
@@ -2725,14 +2989,14 @@ const Predict = () => {
                   </div>
                 </div>
 
-                <div className="market-predict__key-predictions" style={{ marginBottom: '4px' }}>
-                  <div className="market-predict__prediction-row" style={{ marginBottom: '2px' }}>
+                <div className="market-predict__key-predictions" style={{ marginBottom: "4px" }}>
+                  <div className="market-predict__prediction-row" style={{ marginBottom: "2px" }}>
                     <div className="market-predict__prediction-label">Support:</div>
                     <div className="market-predict__prediction-value">
                       ${(probabilityData?.support || selectedItem.current_price * 0.95).toFixed(2)}
                     </div>
                   </div>
-                  <div className="market-predict__prediction-row" style={{ marginBottom: '2px' }}>
+                  <div className="market-predict__prediction-row" style={{ marginBottom: "2px" }}>
                     <div className="market-predict__prediction-label">Resistance:</div>
                     <div className="market-predict__prediction-value">
                       ${(probabilityData?.resistance || selectedItem.current_price * 1.05).toFixed(2)}
@@ -2740,11 +3004,17 @@ const Predict = () => {
                   </div>
                 </div>
 
-                <div className="market-predict__metrics-mini" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px', margin: '10px 0' }}>
+                <div
+                  className="market-predict__metrics-mini"
+                  style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "8px", margin: "10px 0" }}
+                >
                   <div className="market-predict__metric-mini">
                     <div className="market-predict__metric-mini-label">Volatility</div>
                     <div className="market-predict__metric-mini-value">
-                      {(probabilityData?.volatility || Math.abs(selectedItem.price_change_percentage_24h) * 0.5).toFixed(2)}%
+                      {(
+                        probabilityData?.volatility || Math.abs(selectedItem.price_change_percentage_24h) * 0.5
+                      ).toFixed(2)}
+                      %
                     </div>
                   </div>
 
@@ -2770,29 +3040,68 @@ const Predict = () => {
                 </div>
 
                 {/* Add Coin Details Section */}
-                <div className="market-predict__coin-details-panel" style={{ marginTop: '25px', paddingTop: '25px', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-                  <h3 style={{ marginBottom: '15px', fontSize: '18px', color: '#e0e0e0' }}>Coin Details</h3>
-                  <div className="market-predict__coin-description" style={{ marginBottom: '20px', lineHeight: '1.5' }}>
-                    <p>{selectedItem.name} is a leading cryptocurrency with strong market presence. It offers fast, secure transactions and has a growing ecosystem of applications.</p>
+                <div
+                  className="market-predict__coin-details-panel"
+                  style={{ marginTop: "25px", paddingTop: "25px", borderTop: "1px solid rgba(255, 255, 255, 0.1)" }}
+                >
+                  <h3 style={{ marginBottom: "15px", fontSize: "18px", color: "#e0e0e0" }}>Coin Details</h3>
+                  <div className="market-predict__coin-description" style={{ marginBottom: "20px", lineHeight: "1.5" }}>
+                    <p>
+                      {selectedItem.name} is a leading cryptocurrency with strong market presence. It offers fast,
+                      secure transactions and has a growing ecosystem of applications.
+                    </p>
                   </div>
-                  
-                  <div className="market-predict__coin-metrics" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px' }}>
-                    <div className="market-predict__coin-metric" style={{ padding: '8px', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '8px' }}>
-                      <div className="market-predict__coin-metric-label" style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px', color: '#999' }}>
+
+                  <div
+                    className="market-predict__coin-metrics"
+                    style={{ display: "grid", gridTemplateColumns: "1fr", gap: "8px" }}
+                  >
+                    <div
+                      className="market-predict__coin-metric"
+                      style={{ padding: "8px", background: "rgba(255, 255, 255, 0.05)", borderRadius: "8px" }}
+                    >
+                      <div
+                        className="market-predict__coin-metric-label"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "4px",
+                          marginBottom: "4px",
+                          color: "#999",
+                        }}
+                      >
                         <BarChart2 size={16} />
                         Market Dominance
                       </div>
-                      <div className="market-predict__coin-metric-value" style={{ fontSize: '16px', fontWeight: '500' }}>
+                      <div
+                        className="market-predict__coin-metric-value"
+                        style={{ fontSize: "16px", fontWeight: "500" }}
+                      >
                         {((selectedItem.market_cap / 2500000000000) * 100).toFixed(2)}%
                       </div>
                     </div>
 
-                    <div className="market-predict__coin-metric" style={{ padding: '8px', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '8px' }}>
-                      <div className="market-predict__coin-metric-label" style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px', color: '#999' }}>
+                    <div
+                      className="market-predict__coin-metric"
+                      style={{ padding: "8px", background: "rgba(255, 255, 255, 0.05)", borderRadius: "8px" }}
+                    >
+                      <div
+                        className="market-predict__coin-metric-label"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "4px",
+                          marginBottom: "4px",
+                          color: "#999",
+                        }}
+                      >
                         <DollarSign size={16} />
                         Price (USD)
                       </div>
-                      <div className="market-predict__coin-metric-value" style={{ fontSize: '16px', fontWeight: '500' }}>
+                      <div
+                        className="market-predict__coin-metric-value"
+                        style={{ fontSize: "16px", fontWeight: "500" }}
+                      >
                         ${selectedItem.current_price.toLocaleString()}
                       </div>
                     </div>
@@ -2805,29 +3114,35 @@ const Predict = () => {
       </div>
 
       <div className="market-predict__chart-controls">
-        <div className="market-predict__controls-container" style={{ 
-          gap: '8px',
-          '@media (max-width: 768px)': {
-            flexDirection: 'column',
-            alignItems: 'stretch'
-          }
-        }}>
-          <div className="market-predict__timeframe-selector" style={{ 
-            gap: '8px',
-            '@media (max-width: 768px)': {
-              justifyContent: 'center'
-            }
-          }}>
+        <div
+          className="market-predict__controls-container"
+          style={{
+            gap: "8px",
+            "@media (max-width: 768px)": {
+              flexDirection: "column",
+              alignItems: "stretch",
+            },
+          }}
+        >
+          <div
+            className="market-predict__timeframe-selector"
+            style={{
+              gap: "8px",
+              "@media (max-width: 768px)": {
+                justifyContent: "center",
+              },
+            }}
+          >
             {["30m", "1h", "4h", "24h"].map((tf) => (
               <button
                 key={tf}
                 className={`market-predict__timeframe-button ${timeframe === tf ? "market-predict__timeframe-button--active" : ""} ${pendingTimeframe === tf ? "market-predict__timeframe-button--pending" : ""}`}
                 onClick={() => handleTimeframeChange(tf)}
                 style={{
-                  '@media (max-width: 768px)': {
-                    flex: '1',
-                    minWidth: '60px'
-                  }
+                  "@media (max-width: 768px)": {
+                    flex: "1",
+                    minWidth: "60px",
+                  },
                 }}
               >
                 {tf}
@@ -2835,22 +3150,25 @@ const Predict = () => {
             ))}
           </div>
 
-          <div className="market-predict__control-button-group" style={{
-            '@media (max-width: 768px)': {
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, 1fr)',
-              gap: '8px'
-            }
-          }}>
+          <div
+            className="market-predict__control-button-group"
+            style={{
+              "@media (max-width: 768px)": {
+                display: "grid",
+                gridTemplateColumns: "repeat(2, 1fr)",
+                gap: "8px",
+              },
+            }}
+          >
             <motion.button
               className={`market-predict__control-button market-predict__predict-button ${isPredicting ? "market-predict__predict-button--active" : ""}`}
               onClick={handlePredict}
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               style={{
-                '@media (max-width: 768px)': {
-                  width: '100%'
-                }
+                "@media (max-width: 768px)": {
+                  width: "100%",
+                },
               }}
             >
               Predict
@@ -2861,9 +3179,9 @@ const Predict = () => {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               style={{
-                '@media (max-width: 768px)': {
-                  width: '100%'
-                }
+                "@media (max-width: 768px)": {
+                  width: "100%",
+                },
               }}
             >
               Probability
@@ -2874,9 +3192,9 @@ const Predict = () => {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               style={{
-                '@media (max-width: 768px)': {
-                  width: '100%'
-                }
+                "@media (max-width: 768px)": {
+                  width: "100%",
+                },
               }}
             >
               Stats
@@ -2887,9 +3205,9 @@ const Predict = () => {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               style={{
-                '@media (max-width: 768px)': {
-                  width: '100%'
-                }
+                "@media (max-width: 768px)": {
+                  width: "100%",
+                },
               }}
             >
               Add to Portfolio
@@ -2898,19 +3216,25 @@ const Predict = () => {
         </div>
       </div>
 
-      <div className="market-predict__market-data" style={{
-        '@media (max-width: 768px)': {
-          padding: '10px'
-        }
-      }}>
+      <div
+        className="market-predict__market-data"
+        style={{
+          "@media (max-width: 768px)": {
+            padding: "10px",
+          },
+        }}
+      >
         <div className="market-predict__market-stats">
           <h2>Market Stats</h2>
-          <div className="market-predict__stats-grid" style={{
-            '@media (max-width: 768px)': {
-              gridTemplateColumns: 'repeat(2, 1fr)',
-              gap: '10px'
-            }
-          }}>
+          <div
+            className="market-predict__stats-grid"
+            style={{
+              "@media (max-width: 768px)": {
+                gridTemplateColumns: "repeat(2, 1fr)",
+                gap: "10px",
+              },
+            }}
+          >
             <div className="market-predict__stat-item">
               <div className="market-predict__stat-label">Market Cap</div>
               <div className="market-predict__stat-value">${formatNumber(selectedItem.market_cap || 0)}</div>
