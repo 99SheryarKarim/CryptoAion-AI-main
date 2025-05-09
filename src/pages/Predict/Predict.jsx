@@ -157,15 +157,22 @@ const Predict = () => {
     const chartWidth = width - padding * 2
     const chartHeight = height - padding * 2
 
-    // Find min and max values
+    // Find min and max values with improved scaling
     const values = chartData.map((d) => d.price).filter((v) => !isNaN(v) && v !== undefined)
     if (values.length === 0) return
 
-    const minValue = Math.min(...values)
-    const maxValue = Math.max(...values)
+    // Calculate min and max with padding to prevent flattening
+    const rawMin = Math.min(...values)
+    const rawMax = Math.max(...values)
+    const priceRange = rawMax - rawMin
+    
+    // Add padding to the range to prevent flattening
+    const paddingPercent = 0.05 // Reduced padding to 5% for better scaling
+    const minValue = rawMin - (priceRange * paddingPercent)
+    const maxValue = rawMax + (priceRange * paddingPercent)
     const valueRange = maxValue - minValue || 1
 
-    // Draw historical price line with animation
+    // Draw historical price line (full width)
     ctx.beginPath()
     ctx.strokeStyle = "#5bc0de"
     ctx.lineWidth = 2
@@ -173,59 +180,88 @@ const Predict = () => {
     ctx.imageSmoothingEnabled = true
 
     let firstValidPoint = true
-    const stopIndex = Math.floor(chartData.length / 2)
-    const animatedStop = Math.floor(chartData.length * historyAnimationProgress)
-
-    // Draw historical line
-    chartData.forEach((point, index) => {
-      if (!point || point.price === undefined || isNaN(point.price)) return
-      if (index > animatedStop) return // Animate up to progress
-
-      // Only stop at middle if prediction is active
-      if (showPredictionLine && index > stopIndex) return
-
-      const x = padding + chartWidth * (index / (chartData.length - 1))
-      const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
-      if (firstValidPoint) {
-        ctx.moveTo(x, y)
-        firstValidPoint = false
-      } else {
-        ctx.lineTo(x, y)
-      }
-    })
-    ctx.stroke()
-    ctx.globalAlpha = 1.0
-
-    // Draw prediction line from the stop point to the end, animated, only if showPredictionLine
-    if (predicted_next_price && showPredictionLine) {
-      ctx.beginPath()
-      ctx.strokeStyle = "#FFA500"
-      ctx.lineWidth = 2
-      ctx.globalAlpha = 0.7
-      ctx.imageSmoothingEnabled = true
-
-      // Start from the last point of the stopped history
-      const startPoint = chartData[stopIndex]
-      if (startPoint) {
-        const startX = padding + chartWidth * (stopIndex / (chartData.length - 1))
-        const startY = padding + chartHeight * (1 - (startPoint.price - minValue) / valueRange)
-        ctx.moveTo(startX, startY)
-
-        const predEnd = stopIndex + 1 + Math.floor((chartData.length - stopIndex - 1) * predictionAnimationProgress)
-        for (let i = stopIndex + 1; i < predEnd; i++) {
-          const point = chartData[i]
-          if (!point || point.price === undefined || isNaN(point.price)) continue
-          const x = padding + chartWidth * (i / (chartData.length - 1))
-          const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+    const middleIndex = Math.floor(chartData.length / 2)
+    
+    // If prediction hasn't been made yet, draw full line in cyan
+    if (!showPrediction) {
+      chartData.forEach((point, index) => {
+        if (!point || point.price === undefined || isNaN(point.price)) return
+        const x = padding + chartWidth * (index / (chartData.length - 1))
+        const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+        if (firstValidPoint) {
+          ctx.moveTo(x, y)
+          firstValidPoint = false
+        } else {
           ctx.lineTo(x, y)
         }
-        ctx.stroke()
-      }
+      })
+      ctx.stroke()
+    } else {
+      // Draw cyan line up to middle
+      chartData.forEach((point, index) => {
+        if (!point || point.price === undefined || isNaN(point.price)) return
+        if (index > middleIndex) return // Stop at the middle
+        const x = padding + chartWidth * (index / (chartData.length - 1))
+        const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+        if (firstValidPoint) {
+          ctx.moveTo(x, y)
+          firstValidPoint = false
+        } else {
+          ctx.lineTo(x, y)
+        }
+      })
+      ctx.stroke()
+
+      // Draw orange line from middle to end
+      ctx.beginPath()
+      ctx.strokeStyle = "#FFA500"
+      ctx.globalAlpha = 0.7
+      
+      firstValidPoint = true
+      chartData.forEach((point, index) => {
+        if (!point || point.price === undefined || isNaN(point.price)) return
+        if (index < middleIndex) return // Start from middle
+        const x = padding + chartWidth * (index / (chartData.length - 1))
+        const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+        if (firstValidPoint) {
+          ctx.moveTo(x, y)
+          firstValidPoint = false
+        } else {
+          ctx.lineTo(x, y)
+        }
+      })
+      ctx.stroke()
     }
     ctx.globalAlpha = 1.0
 
-    // Draw grid lines and labels
-    drawGridLines(ctx, width, height, padding, chartHeight, minValue, maxValue, valueRange)
+    // Draw grid lines and labels with improved scaling
+    const gridLines = 5
+    for (let i = 0; i <= gridLines; i++) {
+      const y = padding + chartHeight * (1 - i / gridLines)
+      ctx.beginPath()
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.2)"
+      ctx.lineWidth = 1
+      ctx.moveTo(padding, y)
+      ctx.lineTo(width - padding, y)
+      ctx.stroke()
+
+      // Draw value labels with improved formatting
+      const value = minValue + valueRange * (i / gridLines)
+      ctx.fillStyle = "#ffffff"
+      ctx.font = "12px Arial"
+      ctx.textAlign = "right"
+      ctx.fillText(formatPriceLabel(value), padding - 5, y + 3)
+    }
+
+    // Draw time labels
+    const timePoints = generateFutureTimePoints(timeframe)
+    timePoints.forEach((point, i) => {
+      const xPos = padding + (width - padding * 2) * (i / (timePoints.length - 1))
+      ctx.fillStyle = "#ffffff"
+      ctx.font = "12px Arial"
+      ctx.textAlign = "center"
+      ctx.fillText(formatTimeLabel(point.time), xPos, height - padding + 15)
+    })
   }
 
   const [utcTime, setUtcTime] = useState(new Date())
@@ -426,15 +462,22 @@ const Predict = () => {
       const chartWidth = width - padding * 2
       const chartHeight = height - padding * 2
 
-      // Find min and max values
+      // Find min and max values with improved scaling
       const values = chartData.map((d) => d.price).filter((v) => !isNaN(v) && v !== undefined)
       if (values.length === 0) return
 
-      const minValue = Math.min(...values)
-      const maxValue = Math.max(...values)
+      // Calculate min and max with padding to prevent flattening
+      const rawMin = Math.min(...values)
+      const rawMax = Math.max(...values)
+      const priceRange = rawMax - rawMin
+      
+      // Add padding to the range to prevent flattening
+      const paddingPercent = 0.05 // Reduced padding to 5% for better scaling
+      const minValue = rawMin - (priceRange * paddingPercent)
+      const maxValue = rawMax + (priceRange * paddingPercent)
       const valueRange = maxValue - minValue || 1
 
-      // Draw historical price line up to the middle or timeframe duration
+      // Draw historical price line (full width)
       ctx.beginPath()
       ctx.strokeStyle = "#5bc0de"
       ctx.lineWidth = 2
@@ -442,10 +485,31 @@ const Predict = () => {
       ctx.imageSmoothingEnabled = true
 
       let firstValidPoint = true
-      const stopIndex = Math.floor(chartData.length / 2)
+      
+      // Draw cyan line up to middle
       chartData.forEach((point, index) => {
         if (!point || point.price === undefined || isNaN(point.price)) return
-        if (index > stopIndex) return // Stop at the middle
+        if (index > Math.floor(chartData.length / 2)) return // Stop at the middle
+        const x = padding + chartWidth * (index / (chartData.length - 1))
+        const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
+        if (firstValidPoint) {
+          ctx.moveTo(x, y)
+          firstValidPoint = false
+        } else {
+          ctx.lineTo(x, y)
+        }
+      })
+      ctx.stroke()
+
+      // Draw orange line from middle to end
+      ctx.beginPath()
+      ctx.strokeStyle = "#FFA500"
+      ctx.globalAlpha = 0.7
+      
+      firstValidPoint = true
+      chartData.forEach((point, index) => {
+        if (!point || point.price === undefined || isNaN(point.price)) return
+        if (index < Math.floor(chartData.length / 2)) return // Start from middle
         const x = padding + chartWidth * (index / (chartData.length - 1))
         const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
         if (firstValidPoint) {
@@ -458,67 +522,46 @@ const Predict = () => {
       ctx.stroke()
       ctx.globalAlpha = 1.0
 
-      // Draw prediction line from the stop point to the end
-      if (predicted_next_price) {
+      // Draw grid lines and labels with improved scaling
+      const gridLines = 5
+      for (let i = 0; i <= gridLines; i++) {
+        const y = padding + chartHeight * (1 - i / gridLines)
         ctx.beginPath()
-        ctx.strokeStyle = "#FFA500"
-        ctx.lineWidth = 2
-        ctx.globalAlpha = 0.7
-        ctx.imageSmoothingEnabled = true
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.2)"
+        ctx.lineWidth = 1
+        ctx.moveTo(padding, y)
+        ctx.lineTo(width - padding, y)
+        ctx.stroke()
 
-        // Start from the last point of the stopped history
-        const startPoint = chartData[stopIndex]
-        if (startPoint) {
-          const startX = padding + chartWidth * (stopIndex / (chartData.length - 1))
-          const startY = padding + chartHeight * (1 - (startPoint.price - minValue) / valueRange)
-          ctx.moveTo(startX, startY)
-          for (let i = stopIndex + 1; i < chartData.length; i++) {
-            const point = chartData[i]
-            if (!point || point.price === undefined || isNaN(point.price)) continue
-            const x = padding + chartWidth * (i / (chartData.length - 1))
-            const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
-            ctx.lineTo(x, y)
-          }
-          ctx.stroke()
-        }
+        // Draw value labels with improved formatting
+        const value = minValue + valueRange * (i / gridLines)
+        ctx.fillStyle = "#ffffff"
+        ctx.font = "12px Arial"
+        ctx.textAlign = "right"
+        ctx.fillText(formatPriceLabel(value), padding - 5, y + 3)
       }
-      ctx.globalAlpha = 1.0
 
-      // Draw grid lines and labels
-      drawGridLines(ctx, width, height, padding, chartHeight, minValue, maxValue, valueRange)
+      // Draw time labels
+      const timePoints = generateFutureTimePoints(timeframe)
+      timePoints.forEach((point, i) => {
+        const xPos = padding + (width - padding * 2) * (i / (timePoints.length - 1))
+        ctx.fillStyle = "#ffffff"
+        ctx.font = "12px Arial"
+        ctx.textAlign = "center"
+        ctx.fillText(formatTimeLabel(point.time), xPos, height - padding + 15)
+      })
     }
   }, [chartData, predicted_next_price])
 
-  // Helper function to draw grid lines and labels
-  const drawGridLines = (ctx, width, height, padding, chartHeight, minValue, maxValue, valueRange) => {
-    // Draw horizontal grid lines
-    const gridLines = 5
-    for (let i = 0; i <= gridLines; i++) {
-      const y = padding + chartHeight * (1 - i / gridLines)
-      ctx.beginPath()
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.2)"
-      ctx.lineWidth = 1
-      ctx.moveTo(padding, y)
-      ctx.lineTo(width - padding, y)
-      ctx.stroke()
-
-      // Draw value labels
-      const value = minValue + valueRange * (i / gridLines)
-      ctx.fillStyle = "#ffffff"
-      ctx.font = "12px Arial"
-      ctx.textAlign = "right"
-      ctx.fillText(value.toFixed(2), padding - 5, y + 3)
+  // Helper function to format price labels based on the value
+  const formatPriceLabel = (value) => {
+    if (value >= 1000) {
+      return `$${value.toFixed(0)}`
+    } else if (value >= 1) {
+      return `$${value.toFixed(2)}`
+    } else {
+      return `$${value.toFixed(4)}`
     }
-
-    // Draw time labels
-    const timePoints = generateFutureTimePoints(timeframe)
-    timePoints.forEach((point, i) => {
-      const xPos = padding + (width - padding * 2) * (i / (timePoints.length - 1))
-      ctx.fillStyle = "#ffffff"
-      ctx.font = "12px Arial"
-      ctx.textAlign = "center"
-      ctx.fillText(formatTimeLabel(point.time), xPos, height - padding + 15)
-    })
   }
 
   // Update probability data when predicted_next_price is received
@@ -1220,10 +1263,27 @@ const Predict = () => {
       for (const possibleId of possibleIds) {
         try {
           const geckoUrl = `https://api.coingecko.com/api/v3/coins/${possibleId}/market_chart?vs_currency=usd&days=${days}`
+          
+          // Add API key to headers if available
+          const headers = {
+            'Content-Type': 'application/json'
+          }
+          
+          // Add API key if available in environment
+          if (process.env.REACT_APP_COINGECKO_API_KEY) {
+            headers['x-cg-pro-api-key'] = process.env.REACT_APP_COINGECKO_API_KEY
+          }
 
-          const geckoResponse = await fetchWithTimeout(geckoUrl, { timeout: 5000 })
+          const geckoResponse = await fetchWithTimeout(geckoUrl, { 
+            timeout: 5000,
+            headers
+          })
 
           if (!geckoResponse.ok) {
+            if (geckoResponse.status === 401) {
+              console.log('CoinGecko API key required or invalid')
+              continue // Try next ID format
+            }
             continue // Try next ID format
           }
 
@@ -1600,15 +1660,22 @@ const Predict = () => {
       const chartWidth = width - padding * 2
       const chartHeight = height - padding * 2
 
-      // Find min and max values
+      // Find min and max values with improved scaling
       const values = chartData.map((d) => d.price).filter((v) => !isNaN(v) && v !== undefined)
       if (values.length === 0) return
 
-      const minValue = Math.min(...values)
-      const maxValue = Math.max(...values)
+      // Calculate min and max with padding to prevent flattening
+      const rawMin = Math.min(...values)
+      const rawMax = Math.max(...values)
+      const priceRange = rawMax - rawMin
+      
+      // Add padding to the range to prevent flattening
+      const paddingPercent = 0.05 // Reduced padding to 5% for better scaling
+      const minValue = rawMin - (priceRange * paddingPercent)
+      const maxValue = rawMax + (priceRange * paddingPercent)
       const valueRange = maxValue - minValue || 1
 
-      // Draw historical price line up to the middle or timeframe duration
+      // Draw historical price line up to the middle
       ctx.beginPath()
       ctx.strokeStyle = "#5bc0de"
       ctx.lineWidth = 2
@@ -1617,6 +1684,7 @@ const Predict = () => {
 
       let firstValidPoint = true
       const stopIndex = Math.floor(chartData.length / 2)
+      
       chartData.forEach((point, index) => {
         if (!point || point.price === undefined || isNaN(point.price)) return
         if (index > stopIndex) return // Stop at the middle
@@ -1632,34 +1700,34 @@ const Predict = () => {
       ctx.stroke()
       ctx.globalAlpha = 1.0
 
-      // Draw prediction line from the stop point to the end
-      if (predicted_next_price) {
+      // Draw grid lines and labels with improved scaling
+      const gridLines = 5
+      for (let i = 0; i <= gridLines; i++) {
+        const y = padding + chartHeight * (1 - i / gridLines)
         ctx.beginPath()
-        ctx.strokeStyle = "#FFA500"
-        ctx.lineWidth = 2
-        ctx.globalAlpha = 0.7
-        ctx.imageSmoothingEnabled = true
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.2)"
+        ctx.lineWidth = 1
+        ctx.moveTo(padding, y)
+        ctx.lineTo(width - padding, y)
+        ctx.stroke()
 
-        // Start from the last point of the stopped history
-        const startPoint = chartData[stopIndex]
-        if (startPoint) {
-          const startX = padding + chartWidth * (stopIndex / (chartData.length - 1))
-          const startY = padding + chartHeight * (1 - (startPoint.price - minValue) / valueRange)
-          ctx.moveTo(startX, startY)
-          for (let i = stopIndex + 1; i < chartData.length; i++) {
-            const point = chartData[i]
-            if (!point || point.price === undefined || isNaN(point.price)) continue
-            const x = padding + chartWidth * (i / (chartData.length - 1))
-            const y = padding + chartHeight * (1 - (point.price - minValue) / valueRange)
-            ctx.lineTo(x, y)
-          }
-          ctx.stroke()
-        }
+        // Draw value labels with improved formatting
+        const value = minValue + valueRange * (i / gridLines)
+        ctx.fillStyle = "#ffffff"
+        ctx.font = "12px Arial"
+        ctx.textAlign = "right"
+        ctx.fillText(formatPriceLabel(value), padding - 5, y + 3)
       }
-      ctx.globalAlpha = 1.0
 
-      // Draw grid lines and labels
-      drawGridLines(ctx, width, height, padding, chartHeight, minValue, maxValue, valueRange)
+      // Draw time labels
+      const timePoints = generateFutureTimePoints(timeframe)
+      timePoints.forEach((point, i) => {
+        const xPos = padding + (width - padding * 2) * (i / (timePoints.length - 1))
+        ctx.fillStyle = "#ffffff"
+        ctx.font = "12px Arial"
+        ctx.textAlign = "center"
+        ctx.fillText(formatTimeLabel(point.time), xPos, height - padding + 15)
+      })
     }
   }, [chartData, predicted_next_price])
 
@@ -2913,7 +2981,7 @@ const Predict = () => {
                 }}
               >
                 {/* Price Change Display */}
-                {currentPrice && predicted_next_price && !predictionLoading && !predictionError && (
+                {/* {currentPrice && predicted_next_price && !predictionLoading && !predictionError && (
                   <div
                     className="market-predict__price-change"
                     style={{
@@ -2935,8 +3003,8 @@ const Predict = () => {
                       {(((predicted_next_price - currentPrice) / currentPrice) * 100).toFixed(2)}%
                     </div>
                   </div>
-                )}
-                <div
+                )} */}
+                {/* <div
                   className="market-predict__price-change"
                   style={{
                     color: predicted_next_price > selectedItem.current_price ? "rgb(34, 211, 238)" : "red",
@@ -2950,7 +3018,7 @@ const Predict = () => {
                     2,
                   )}
                   %
-                </div>
+                </div> */}
                 <div
                   className="market-predict__confidence-meter"
                   style={{ background: "transparent", padding: "8px", marginBottom: "8px" }}
