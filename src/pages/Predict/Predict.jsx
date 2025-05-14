@@ -2009,6 +2009,11 @@ const Predict = () => {
 
   // Handle timeframe change
   const handleTimeframeChange = (tf) => {
+    // Prevent changing to 30m timeframe
+    if (tf === "30m") {
+      return;
+    }
+
     // Store the selected timeframe
     setPendingTimeframe(tf)
 
@@ -2029,7 +2034,7 @@ const Predict = () => {
       type: "info",
       message: `Training model for ${tf} timeframe...`,
       details: "Please wait while the model is being trained for the selected timeframe. This may take a few seconds.",
-      // No duration: stays until user closes
+      duration: 14000
     })
 
     // Update the timeframe in the Redux store and fetch new data
@@ -2052,6 +2057,7 @@ const Predict = () => {
       ...notificationData,
       id: Date.now(),
       timestamp: new Date(),
+      duration: notificationData.duration || 14000 // Set default duration to 14 seconds
     }
 
     // Add to notifications array
@@ -2060,8 +2066,8 @@ const Predict = () => {
     // Also set as current notification for backward compatibility
     setNotification(newNotification)
 
-    // Auto-remove after duration or default 3 seconds
-    const duration = notificationData.duration || 3000
+    // Auto-remove after duration
+    const duration = newNotification.duration
     notificationTimeoutRef.current = setTimeout(() => {
       setNotifications((prev) => prev.filter((n) => n.id !== newNotification.id))
       if (notification && notification.id === newNotification.id) {
@@ -2091,17 +2097,17 @@ const Predict = () => {
           primary: false,
         },
       ],
+      duration: 14000
     })
   }
 
   // Handle viewing prediction details
   const handleViewPredictionDetails = (result) => {
-    // In a real app, this would navigate to a detailed view
-    // For now, we'll just show another notification with more details
     showNotification({
       type: "info",
       message: "Prediction Details",
       details: `Prediction made on ${new Date(result.timestamp).toLocaleString()}\nInitial price: $${result.initialPrice.toFixed(2)}\nFinal price: $${result.finalPrice.toFixed(2)}\nChange: ${result.percentageChange.toFixed(2)}%`,
+      duration: 14000
     })
   }
 
@@ -2150,7 +2156,7 @@ const Predict = () => {
         type: "info",
         message: `Prediction started for ${selectedItem.name}`,
         details: "Analyzing market data...",
-        duration: 3000,
+        duration: 14000
       })
 
       // Get current chart data for immediate update
@@ -2252,7 +2258,7 @@ const Predict = () => {
             type: recommendation.action === "BUY" ? "success" : "warning",
             message: `${recommendation.action} Recommendation for ${selectedItem.name}`,
             details: `${recommendation.reasoning}\nConfidence: ${recommendation.confidence.toFixed(0)}%`,
-            duration: 5000,
+            duration: 14000
           })
         }, 1000)
       }
@@ -2263,7 +2269,7 @@ const Predict = () => {
         type: "error",
         message: `Prediction failed for ${selectedItem.name}`,
         details: "Please try again later",
-        duration: 3000,
+        duration: 14000
       })
     } finally {
       setIsPredicting(false)
@@ -2466,12 +2472,14 @@ const Predict = () => {
         type: "success",
         message: `${selectedItem.name} added to your portfolio`,
         details: "You can view your portfolio in the dashboard",
+        duration: 14000
       })
     } else {
       showNotification({
         type: "info",
         message: `${selectedItem.name} is already in your portfolio`,
         details: "You can view your portfolio in the dashboard",
+        duration: 14000
       })
     }
   }
@@ -3204,16 +3212,44 @@ const Predict = () => {
             {["30m", "1h", "4h", "24h"].map((tf) => (
               <button
                 key={tf}
-                className={`market-predict__timeframe-button ${timeframe === tf ? "market-predict__timeframe-button--active" : ""} ${pendingTimeframe === tf ? "market-predict__timeframe-button--pending" : ""}`}
-                onClick={() => handleTimeframeChange(tf)}
+                className={`market-predict__timeframe-button ${timeframe === tf ? "market-predict__timeframe-button--active" : ""} ${pendingTimeframe === tf ? "market-predict__timeframe-button--pending" : ""} ${tf === "30m" ? "market-predict__timeframe-button--coming-soon" : ""}`}
+                onClick={() => {
+                  if (tf === "30m") {
+                    showNotification({
+                      type: "info",
+                      message: "30-Minute Predictions Coming Soon",
+                      details: "We're working on bringing you high-precision 30-minute predictions. This feature will be available in the next update. For now, please use 1h, 4h, or 24h timeframes for your predictions.",
+                      duration: 14000
+                    });
+                    return;
+                  }
+                  handleTimeframeChange(tf)
+                }}
                 style={{
                   "@media (max-width: 768px)": {
                     flex: "1",
                     minWidth: "60px",
                   },
+                  position: "relative"
                 }}
               >
                 {tf}
+                {tf === "30m" && (
+                  <span style={{
+                    position: "absolute",
+                    top: "-18px",
+                    left: "50%",
+                    transform: "translateX(-50%)",
+                    fontSize: "10px",
+                    color: "#888",
+                    whiteSpace: "nowrap",
+                    backgroundColor: "rgba(26, 31, 46, 0.9)",
+                    padding: "2px 6px",
+                    borderRadius: "4px"
+                  }}>
+                {/* add any comming soon text */}
+                  </span>
+                )}
               </button>
             ))}
           </div>

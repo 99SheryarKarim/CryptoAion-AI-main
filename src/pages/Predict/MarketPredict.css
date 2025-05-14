@@ -322,6 +322,24 @@
   background-color: #f0ad4e;
 }
 
+.market-predict__timeframe-button--coming-soon {
+  opacity: 0.7;
+  cursor: help !important;
+  position: relative;
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  color: #888 !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+.market-predict__timeframe-button--coming-soon:hover {
+  background-color: rgba(255, 255, 255, 0.15) !important;
+  transform: none !important;
+}
+
+.market-predict__timeframe-button--coming-soon:active {
+  transform: none !important;
+}
+
 .market-predict__control-button-group {
   display: flex;
   justify-content: center;
